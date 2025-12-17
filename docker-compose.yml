@@ -1,0 +1,52 @@
+services:
+  # PostgreSQL Database (only service that runs in Docker for dev)
+  db:
+    image: postgres:15-alpine
+    container_name: jobiai-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: jobiai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5436:5432"  # Use 5436 externally to avoid conflict with local PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend API (optional - for production/testing)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: jobiai-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/jobiai
+    volumes:
+      - ./backend/linkedin_data:/app/linkedin_data
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - full  # Only runs with: docker-compose --profile full up
+
+  # Frontend (optional - for production/testing)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: jobiai-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    profiles:
+      - full  # Only runs with: docker-compose --profile full up
+
+volumes:
+  postgres_data:

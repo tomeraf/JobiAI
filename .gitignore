@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+
+# Node
+node_modules/
+dist/
+.next/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Browser data (sensitive)
+backend/browser_data/*
+!backend/browser_data/.gitkeep
+backend/linkedin_data/
+
+# Logs
+*.log
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Temp files
+temp_*.png
+screenshot*.png
+
+# Accidental files
+nul
+
+# Claude Code local settings
+.claude/
