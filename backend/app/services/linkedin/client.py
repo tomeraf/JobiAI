@@ -72,6 +72,11 @@ async def _run_playwright_async(func, *args, **kwargs):
     return await loop.run_in_executor(_playwright_executor, wrapper)
 
 
+class WorkflowAbortedException(Exception):
+    """Raised when workflow is aborted by user."""
+    pass
+
+
 class LinkedInClient:
     """
     LinkedIn client using Playwright with persistent browser context.
@@ -92,6 +97,8 @@ class LinkedInClient:
             cls._instance._playwright = None
             cls._instance._browser = None
             cls._instance._context = None
+            cls._instance._abort_requested = False
+            cls._instance._current_job_id = None
         return cls._instance
 
     def __init__(self):
@@ -101,6 +108,44 @@ class LinkedInClient:
     def get_instance(cls) -> "LinkedInClient":
         """Get singleton instance of the client."""
         return cls()
+
+    def request_abort(self, job_id: int | None = None):
+        """Request the workflow to abort. If job_id is specified, only abort that job."""
+        self._abort_requested = True
+        logger.info(f"Abort requested for job {job_id if job_id else 'current'}")
+
+    def clear_abort(self):
+        """Clear the abort flag."""
+        self._abort_requested = False
+
+    def is_abort_requested(self) -> bool:
+        """Check if abort has been requested."""
+        return self._abort_requested
+
+    def set_current_job(self, job_id: int | None):
+        """Set the currently running job ID."""
+        self._current_job_id = job_id
+
+    def get_current_job(self) -> int | None:
+        """Get the currently running job ID."""
+        return self._current_job_id
+
+    def check_abort(self):
+        """Check if abort was requested and raise exception if so."""
+        if self._abort_requested:
+            raise WorkflowAbortedException("Workflow aborted by user")
+
+    def _wait_with_abort_check(self, page, ms: int):
+        """
+        Wait for specified milliseconds, but check for abort every 500ms.
+        This allows the workflow to be aborted during long waits.
+        """
+        remaining = ms
+        while remaining > 0:
+            self.check_abort()
+            wait_time = min(remaining, 500)  # Check every 500ms max
+            page.wait_for_timeout(wait_time)
+            remaining -= wait_time
 
     def _ensure_data_dir(self):
         """Ensure browser data directory exists."""
@@ -292,10 +337,31 @@ class LinkedInClient:
                 context = p.chromium.launch_persistent_context(
                     str(BROWSER_DATA_PATH),
                     headless=False,
-                    viewport={"width": 1280, "height": 720},
+                    no_viewport=True,  # Required for --start-maximized to work
+                    args=["--start-maximized"],
                 )
 
                 page = context.pages[0] if context.pages else context.new_page()
+                page.bring_to_front()  # Bring browser window to foreground
+
+                # Force window to foreground on Windows
+                try:
+                    import win32gui
+                    import win32con
+                    import time as t
+                    t.sleep(0.5)  # Wait for window to be created
+
+                    def bring_chromium_to_front(hwnd, _):
+                        title = win32gui.GetWindowText(hwnd)
+                        if "Chromium" in title or "LinkedIn" in title:
+                            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                            win32gui.SetForegroundWindow(hwnd)
+                            return False  # Stop enumeration
+                        return True
+
+                    win32gui.EnumWindows(bring_chromium_to_front, None)
+                except Exception as e:
+                    logger.debug(f"Could not bring window to front: {e}")
 
                 # First, go to LinkedIn logout to ensure fresh login
                 logger.info("Clearing any existing LinkedIn session...")
@@ -582,14 +648,18 @@ class LinkedInClient:
                     str(BROWSER_DATA_PATH),
                     headless=False,
                     viewport={"width": 1280, "height": 720},
+                    args=["--window-size=1300,750", "--window-position=100,100"],  # Override maximized state
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+
+                # Check for abort before starting
+                self.check_abort()
 
                 # Step 1: Go to LinkedIn feed page
                 logger.info("Step 1: Going to LinkedIn feed page...")
                 page.goto("https://www.linkedin.com/feed/", timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(DELAY_MS)
+                self._wait_with_abort_check(page, DELAY_MS)
 
                 # Close any open message overlays before starting
                 self._close_all_message_overlays(page)
@@ -620,12 +690,18 @@ class LinkedInClient:
                     context.close()
                     return result
 
+                # Check for abort
+                self.check_abort()
+
                 # Step 4: Filter by 1st degree and extract
                 logger.info("Step 4: Filtering by 1st degree connections...")
                 self._apply_connection_filter(page, "1st")
                 first_degree = self._extract_search_results(page, company)
                 result["first_degree"] = first_degree
                 logger.info(f"Found {len(first_degree)} 1st degree connections")
+
+                # Check for abort before sending messages
+                self.check_abort()
 
                 # Step 5: If 1st degree found and message_generator provided, send messages from search page
                 # Skip if no message_generator (e.g., when Hebrew name translation needed)
@@ -644,6 +720,9 @@ class LinkedInClient:
                 should_try_2nd_degree = not first_degree or (first_degree and message_generator and messages_sent_count == 0)
 
                 if should_try_2nd_degree:
+                    # Check for abort before 2nd degree
+                    self.check_abort()
+
                     if first_degree:
                         logger.info(f"All {len(first_degree)} 1st degree connections were skipped (existing history), trying 2nd degree...")
                     else:
@@ -658,6 +737,9 @@ class LinkedInClient:
 
                     # Step 6: If no 2nd degree connected, try 3rd+ degree
                     if not connected_people:
+                        # Check for abort before 3rd+ degree
+                        self.check_abort()
+
                         logger.info("No 2nd degree found with Connect button, switching to 3rd+ degree filter...")
                         self._apply_connection_filter(page, "3rd+")
 
@@ -669,6 +751,14 @@ class LinkedInClient:
 
                 context.close()
                 return result
+
+            except WorkflowAbortedException:
+                logger.info("Workflow aborted by user - closing browser")
+                try:
+                    context.close()
+                except:
+                    pass
+                raise  # Re-raise to propagate abort
 
             except Exception as e:
                 logger.error(f"Combined search failed: {e}", exc_info=True)
@@ -1186,10 +1276,13 @@ class LinkedInClient:
         company_lower = company.lower()
 
         for page_num in range(1, num_pages + 1):
+            # Check for abort at start of each page
+            self.check_abort()
+
             logger.info(f"Processing page {page_num} of {num_pages}")
 
-            # Wait for results to load
-            page.wait_for_timeout(DELAY_MS)
+            # Wait for results to load (with abort check)
+            self._wait_with_abort_check(page, DELAY_MS)
 
             # Process current page
             page_results = self._process_search_results_page(page, company_lower, connected_people)
@@ -1224,6 +1317,8 @@ class LinkedInClient:
             else:
                 logger.info("Next button not found or disabled")
                 return False
+        except WorkflowAbortedException:
+            raise  # Re-raise abort exception immediately
         except Exception as e:
             logger.error(f"Error navigating to next page: {e}")
             return False
@@ -1255,6 +1350,9 @@ class LinkedInClient:
         already_connected_urls = {p.get("linkedin_url") for p in already_connected}
 
         for result in results:
+            # Check for abort before processing each result
+            self.check_abort()
+
             try:
                 # Get person info first
                 name = ""
@@ -1350,6 +1448,8 @@ class LinkedInClient:
                         "is_connection": False,
                         "connection_request_sent": True,
                     })
+                except WorkflowAbortedException:
+                    raise  # Re-raise abort exception immediately
                 except Exception as send_error:
                     # Modal might have "Add a note" option - click Send without note
                     # Or close the modal if we can't find send
@@ -1359,8 +1459,11 @@ class LinkedInClient:
                         page.wait_for_timeout(DELAY_MS // 2)
                     logger.warning(f"Could not find Send button for {name}: {send_error}")
 
-                # Small delay between connection requests
-                page.wait_for_timeout(DELAY_MS)
+                # Small delay between connection requests (with abort check)
+                self._wait_with_abort_check(page, DELAY_MS)
+
+            except WorkflowAbortedException:
+                raise  # Re-raise abort exception immediately
 
             except Exception as e:
                 logger.error(f"Error sending connection request: {e}")
@@ -1394,10 +1497,13 @@ class LinkedInClient:
         company_lower = company.lower()
 
         for page_num in range(1, num_pages + 1):
+            # Check for abort at start of each page
+            self.check_abort()
+
             logger.info(f"Processing page {page_num} of {num_pages} for messaging")
 
-            # Wait for results to load
-            page.wait_for_timeout(DELAY_MS)
+            # Wait for results to load (with abort check)
+            self._wait_with_abort_check(page, DELAY_MS)
 
             # Process current page
             page_results = self._process_message_results_page(page, company_lower, already_messaged=messaged_people, message_generator=message_generator)
@@ -1440,6 +1546,9 @@ class LinkedInClient:
         already_messaged_urls = {p.get("linkedin_url") for p in already_messaged}
 
         for result in results:
+            # Check for abort before processing each result
+            self.check_abort()
+
             try:
                 # Get person info first
                 name = ""
@@ -1628,6 +1737,8 @@ class LinkedInClient:
 
                         continue  # Skip to next person in the loop
 
+                except WorkflowAbortedException:
+                    raise  # Re-raise abort exception immediately
                 except Exception as history_check_error:
                     logger.warning(f"Could not check message history for {name}: {history_check_error}")
                     # Continue with sending message if check fails
@@ -1676,6 +1787,8 @@ class LinkedInClient:
                             "is_connection": True,
                             "message_sent": True,
                         })
+                    except WorkflowAbortedException:
+                        raise  # Re-raise abort exception immediately
                     except Exception as send_error:
                         logger.warning(f"Could not find Send button for {name}: {send_error}")
                         # Close the modal
@@ -1684,6 +1797,8 @@ class LinkedInClient:
                             close_btn.click()
                             page.wait_for_timeout(300)
 
+                except WorkflowAbortedException:
+                    raise  # Re-raise abort exception immediately
                 except Exception as input_error:
                     logger.warning(f"Could not find message input for {name}: {input_error}")
                     # Close the modal
@@ -1694,8 +1809,11 @@ class LinkedInClient:
                         close_btn.click()
                         page.wait_for_timeout(300)
 
-                # Small delay between messages
-                page.wait_for_timeout(DELAY_MS)
+                # Small delay between messages (with abort check)
+                self._wait_with_abort_check(page, DELAY_MS)
+
+            except WorkflowAbortedException:
+                raise  # Re-raise abort exception immediately
 
             except Exception as e:
                 logger.error(f"Error sending message: {e}")

@@ -50,6 +50,12 @@ export const jobsApi = {
 
   getPendingHebrewNames: (id: number) =>
     api.get(`/jobs/${id}/pending-hebrew-names`).then(res => res.data),
+
+  abort: () =>
+    api.post('/jobs/abort').then(res => res.data),
+
+  getCurrent: () =>
+    api.get('/jobs/current').then(res => res.data),
 }
 
 // Templates API

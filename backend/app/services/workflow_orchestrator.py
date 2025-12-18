@@ -20,6 +20,7 @@ from app.models.activity import ActivityLog, ActionType
 from app.services.linkedin.search import LinkedInSearch
 from app.services.linkedin.messaging import LinkedInMessaging
 from app.services.linkedin.connections import LinkedInConnections
+from app.services.linkedin.client import LinkedInClient, WorkflowAbortedException
 from app.services.gender_detector import detect_gender
 from app.services.hebrew_names import (
     translate_name_to_hebrew,
@@ -46,6 +47,7 @@ class WorkflowOrchestrator:
         self.search = LinkedInSearch()
         self.messaging = LinkedInMessaging()
         self.connections = LinkedInConnections()
+        self.client = LinkedInClient.get_instance()
 
     async def run_workflow(self, job_id: int, template_id: int | None = None) -> dict:
         """
@@ -77,6 +79,10 @@ class WorkflowOrchestrator:
             logger.info(f"Initializing workflow services for job {job_id}")
             self.initialize_services()
 
+            # Set current job and clear any previous abort flag
+            self.client.clear_abort()
+            self.client.set_current_job(job_id)
+
             # Update status
             job.status = JobStatus.PROCESSING
             logger.info(f"Job {job_id} status set to PROCESSING, starting workflow")
@@ -86,6 +92,20 @@ class WorkflowOrchestrator:
             logger.info(f"Workflow completed for job {job_id}: {workflow_result}")
 
             return workflow_result
+
+        except WorkflowAbortedException:
+            logger.info(f"Workflow aborted by user for job {job_id}")
+            job.status = JobStatus.ABORTED
+            job.error_message = "Workflow aborted by user"
+
+            await self._log_activity(
+                ActionType.ERROR,
+                "Workflow aborted by user",
+                {"job_id": job_id},
+                job_id=job.id,
+            )
+
+            return {"success": False, "error": "Workflow aborted by user", "aborted": True}
 
         except Exception as e:
             logger.error(f"Workflow error for job {job_id}: {e}")
@@ -101,6 +121,10 @@ class WorkflowOrchestrator:
 
             return {"success": False, "error": str(e)}
 
+        finally:
+            # Clear current job
+            self.client.set_current_job(None)
+
     async def _run_from_step(self, job: Job, template: Template) -> dict:
         """Run workflow from the current step."""
         results = {
@@ -114,6 +138,9 @@ class WorkflowOrchestrator:
         }
 
         company = job.company_name
+
+        # Check for abort before starting
+        self.client.check_abort()
 
         # Resume from NEEDS_HEBREW_NAMES step - re-run the search workflow
         # Hebrew name translation is now handled inline in the message generator

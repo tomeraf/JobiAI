@@ -17,6 +17,9 @@ import {
   AlertTriangle,
   LogIn,
   Languages,
+  StopCircle,
+  RotateCw,
+  Ban,
 } from 'lucide-react'
 import { jobsApi, authApi, templatesApi } from '../api/client'
 import { useNavigate } from 'react-router-dom'
@@ -87,41 +90,70 @@ function JobSubmitForm({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const config: Record<string, { icon: typeof Clock; color: string }> = {
-    pending: { icon: Clock, color: 'bg-gray-100 text-gray-700' },
-    processing: { icon: Loader2, color: 'bg-yellow-100 text-yellow-700' },
-    needs_input: { icon: HelpCircle, color: 'bg-orange-100 text-orange-700' },
-    completed: { icon: CheckCircle, color: 'bg-green-100 text-green-700' },
-    failed: { icon: XCircle, color: 'bg-red-100 text-red-700' },
+function StatusBadge({ status, isWaiting, isProcessing }: { status: string; isWaiting?: boolean; isProcessing?: boolean }) {
+  // If job is waiting (ready to run), show blue "Waiting"
+  if (isWaiting) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+        <Clock className="w-3 h-3" />
+        Waiting
+      </span>
+    )
   }
 
-  const { icon: Icon, color } = config[status] || config.pending
+  // If job is currently processing, show yellow "Processing" (no spinning icon - the workflow badge has it)
+  if (isProcessing) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+        Processing
+      </span>
+    )
+  }
+
+  const config: Record<string, { icon: typeof Clock; color: string; label: string }> = {
+    pending: { icon: Clock, color: 'bg-gray-100 text-gray-700', label: 'Pending' },
+    processing: { icon: Loader2, color: 'bg-yellow-100 text-yellow-700', label: 'Processing' },
+    needs_input: { icon: HelpCircle, color: 'bg-orange-100 text-orange-700', label: 'Needs Input' },
+    completed: { icon: CheckCircle, color: 'bg-green-100 text-green-700', label: 'Completed' },
+    failed: { icon: XCircle, color: 'bg-red-100 text-red-700', label: 'Failed' },
+    aborted: { icon: Ban, color: 'bg-gray-100 text-gray-600', label: 'Aborted' },
+  }
+
+  const { icon: Icon, color, label } = config[status] || config.pending
 
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${color}`}>
       <Icon className={`w-3 h-3 ${status === 'processing' ? 'animate-spin' : ''}`} />
-      {status === 'needs_input' ? 'Needs Input' : status}
+      {label}
     </span>
   )
 }
 
-function WorkflowBadge({ step }: { step: string }) {
+function WorkflowBadge({ step, isProcessing }: { step: string; isProcessing?: boolean }) {
+  // When processing, show "Working" with spinning arrows
+  if (isProcessing) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+        <RotateCw className="w-3 h-3 animate-spin" />
+        Working
+      </span>
+    )
+  }
+
   const stepLabels: Record<string, { label: string; color: string; icon?: string }> = {
     company_extraction: { label: 'Ready', color: 'bg-blue-100 text-blue-700', icon: 'play' },
-    search_connections: { label: 'Searching...', color: 'bg-yellow-100 text-yellow-700', icon: 'loading' },
+    search_connections: { label: 'Ready', color: 'bg-blue-100 text-blue-700', icon: 'play' },
     needs_hebrew_names: { label: 'Needs Names', color: 'bg-purple-100 text-purple-700', icon: 'language' },
-    message_connections: { label: 'Messaging...', color: 'bg-yellow-100 text-yellow-700', icon: 'loading' },
-    search_linkedin: { label: 'Searching LinkedIn...', color: 'bg-yellow-100 text-yellow-700', icon: 'loading' },
-    send_requests: { label: 'Sending requests...', color: 'bg-yellow-100 text-yellow-700', icon: 'loading' },
+    message_connections: { label: 'Ready', color: 'bg-blue-100 text-blue-700', icon: 'play' },
+    search_linkedin: { label: 'Ready', color: 'bg-blue-100 text-blue-700', icon: 'play' },
+    send_requests: { label: 'Ready', color: 'bg-blue-100 text-blue-700', icon: 'play' },
     done: { label: 'Done', color: 'bg-green-100 text-green-700', icon: 'check' },
   }
 
-  const { label, color, icon } = stepLabels[step] || { label: step, color: 'bg-gray-100 text-gray-700', icon: 'loading' }
+  const { label, color, icon } = stepLabels[step] || { label: step, color: 'bg-gray-100 text-gray-700', icon: 'play' }
 
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${color}`}>
-      {icon === 'loading' && <Loader2 className="w-3 h-3 animate-spin" />}
       {icon === 'check' && <CheckCircle className="w-3 h-3" />}
       {icon === 'play' && <Play className="w-3 h-3" />}
       {icon === 'language' && <Languages className="w-3 h-3" />}
@@ -531,6 +563,7 @@ function Jobs() {
   const [hebrewNamesJob, setHebrewNamesJob] = useState<Job | null>(null)
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [showNoTemplateModal, setShowNoTemplateModal] = useState(false)
+  const [isAborting, setIsAborting] = useState(false)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
 
@@ -553,7 +586,15 @@ function Jobs() {
     queryFn: () => templatesApi.list(),
   })
 
+  // Check if there's a currently running job
+  const { data: currentJobData } = useQuery({
+    queryKey: ['current-job'],
+    queryFn: () => jobsApi.getCurrent(),
+    refetchInterval: 2000, // Poll every 2 seconds when workflow is running
+  })
+
   const isLinkedInLoggedIn = authStatus?.logged_in === true
+  const currentRunningJobId = currentJobData?.job_id
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => jobsApi.delete(id),
@@ -616,16 +657,92 @@ function Jobs() {
     },
   })
 
+  // Abort workflow mutation
+  const abortMutation = useMutation({
+    mutationFn: () => {
+      setIsAborting(true)
+      return jobsApi.abort()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['current-job'] })
+      // Keep isAborting true longer - workflow needs time to actually stop
+      // Reset after 10 seconds max, but job status change will hide button anyway
+      setTimeout(() => setIsAborting(false), 10000)
+    },
+    onError: () => {
+      setIsAborting(false)
+    },
+  })
+
   const jobs: Job[] = data?.jobs || []
 
   // Count jobs needing input
   const needsInputCount = jobs.filter(j => j.status === 'needs_input').length
+
+  // Get jobs ready to run (completed, failed, or aborted with company_name and not done)
+  const runnableJobs = jobs.filter(
+    j => (j.status === 'completed' || j.status === 'failed' || j.status === 'aborted') && j.company_name && j.workflow_step !== 'done'
+  )
+
+  // Run all jobs mutation
+  const runAllMutation = useMutation({
+    mutationFn: async () => {
+      if (!defaultTemplate) {
+        throw new Error('No default template')
+      }
+      // Run jobs sequentially in FIFO order (oldest first)
+      const fifoJobs = [...runnableJobs].reverse()
+      for (const job of fifoJobs) {
+        await jobsApi.triggerWorkflow(job.id, defaultTemplate.id)
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
 
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Jobs</h1>
         <div className="flex items-center gap-2">
+          {/* Run All Jobs Button */}
+          {runnableJobs.length > 0 && (
+            !isLinkedInLoggedIn ? (
+              <button
+                onClick={() => setShowLoginModal(true)}
+                className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-lg hover:bg-yellow-200 flex items-center gap-2 text-sm"
+                title="LinkedIn login required"
+              >
+                <AlertTriangle className="w-4 h-4" />
+                Run All ({runnableJobs.length})
+              </button>
+            ) : !defaultTemplate ? (
+              <button
+                onClick={() => setShowNoTemplateModal(true)}
+                className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-lg hover:bg-yellow-200 flex items-center gap-2 text-sm"
+                title="No default template set"
+              >
+                <AlertTriangle className="w-4 h-4" />
+                Run All ({runnableJobs.length})
+              </button>
+            ) : (
+              <button
+                onClick={() => runAllMutation.mutate()}
+                disabled={runAllMutation.isPending}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2 text-sm"
+                title={`Run workflow for ${runnableJobs.length} jobs with "${defaultTemplate.name}"`}
+              >
+                {runAllMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                Run All ({runnableJobs.length})
+              </button>
+            )
+          )}
           <select
             value={statusFilter || ''}
             onChange={e => setStatusFilter(e.target.value || undefined)}
@@ -637,6 +754,7 @@ function Jobs() {
             <option value="needs_input">Needs Input {needsInputCount > 0 ? `(${needsInputCount})` : ''}</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
+            <option value="aborted">Aborted</option>
           </select>
         </div>
       </div>
@@ -731,13 +849,17 @@ function Jobs() {
                     </a>
                   </td>
                   <td className="px-4 py-3">
-                    <StatusBadge status={job.status} />
-                    {job.error_message && (
+                    <StatusBadge
+                      status={job.status}
+                      isWaiting={!!job.company_name && job.workflow_step !== 'done' && job.status !== 'processing' && job.status !== 'needs_input' && job.id !== currentRunningJobId}
+                      isProcessing={job.status === 'processing' || job.id === currentRunningJobId}
+                    />
+                    {job.error_message && job.status !== 'processing' && job.id !== currentRunningJobId && (
                       <p className="text-xs text-red-500 mt-1">{job.error_message}</p>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <WorkflowBadge step={job.workflow_step} />
+                    <WorkflowBadge step={job.workflow_step} isProcessing={job.status === 'processing' || job.id === currentRunningJobId} />
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {new Date(job.created_at).toLocaleDateString()}
@@ -763,8 +885,26 @@ function Jobs() {
                           <Languages className="w-4 h-4" />
                         </button>
                       )}
-                      {/* Show Play button for completed jobs OR failed jobs that have company_name (workflow retry) */}
-                      {(job.status === 'completed' || job.status === 'failed') && job.company_name && job.workflow_step !== 'done' && (
+                      {/* Show Abort button when this job is currently running (processing status or currentRunningJobId) */}
+                      {(job.status === 'processing' || job.id === currentRunningJobId) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            abortMutation.mutate()
+                          }}
+                          disabled={isAborting}
+                          className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                          title="Stop this workflow"
+                        >
+                          {isAborting ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <StopCircle className="w-4 h-4" />
+                          )}
+                        </button>
+                      )}
+                      {/* Show Play button for completed, failed, or aborted jobs that have company_name (workflow retry) */}
+                      {job.status !== 'processing' && job.id !== currentRunningJobId && (job.status === 'completed' || job.status === 'failed' || job.status === 'aborted') && job.company_name && job.workflow_step !== 'done' && (
                         !isLinkedInLoggedIn ? (
                           <button
                             onClick={() => setShowLoginModal(true)}

@@ -21,6 +21,9 @@ httpx==0.26.0
 # Gender detection
 gender-guesser==0.4.0
 
+# Windows utilities (for bringing browser to foreground)
+pywin32==306; sys_platform == "win32"
+
 # Testing
 pytest==7.4.4
 pytest-asyncio==0.21.1

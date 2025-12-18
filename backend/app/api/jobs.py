@@ -11,6 +11,7 @@ from app.models.activity import ActivityLog, ActionType
 from app.services.job_processor import JobProcessor
 from app.services.workflow_orchestrator import WorkflowOrchestrator
 from app.services.hebrew_names import save_hebrew_name
+from app.services.linkedin.client import LinkedInClient
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -122,6 +123,68 @@ async def list_jobs(
     jobs = result.scalars().all()
 
     return JobListResponse(jobs=jobs, total=total)
+
+
+# NOTE: These routes MUST be before /{job_id} routes to avoid matching conflicts
+class AbortResponse(BaseModel):
+    """Response from abort request."""
+    success: bool
+    message: str
+    job_id: int | None = None
+
+
+@router.post("/abort", response_model=AbortResponse)
+async def abort_workflow(db: AsyncSession = Depends(get_db)):
+    """
+    Abort the currently running workflow.
+
+    This will:
+    1. Signal the LinkedIn client to stop
+    2. Set the job status to ABORTED
+    3. Close the browser
+    """
+    client = LinkedInClient.get_instance()
+    current_job_id = client.get_current_job()
+
+    if not current_job_id:
+        return AbortResponse(
+            success=False,
+            message="No workflow is currently running",
+        )
+
+    # Request abort
+    client.request_abort(current_job_id)
+
+    # Update job status immediately
+    result = await db.execute(select(Job).where(Job.id == current_job_id))
+    job = result.scalar_one_or_none()
+
+    if job:
+        job.status = JobStatus.ABORTED
+        job.error_message = "Workflow aborted by user"
+        await db.commit()
+
+    return AbortResponse(
+        success=True,
+        message="Abort signal sent. Workflow will stop at next checkpoint.",
+        job_id=current_job_id,
+    )
+
+
+@router.get("/current", response_model=dict)
+async def get_current_job():
+    """
+    Get information about the currently running workflow.
+
+    Returns the job ID if a workflow is running, or null if not.
+    """
+    client = LinkedInClient.get_instance()
+    current_job_id = client.get_current_job()
+
+    return {
+        "is_running": current_job_id is not None,
+        "job_id": current_job_id,
+    }
 
 
 @router.get("/{job_id}", response_model=JobResponse)

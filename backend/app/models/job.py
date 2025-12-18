@@ -12,6 +12,7 @@ class JobStatus(str, enum.Enum):
     NEEDS_INPUT = "needs_input"  # Waiting for user to provide company name
     COMPLETED = "completed"
     FAILED = "failed"
+    ABORTED = "aborted"  # User aborted the workflow
 
 
 class WorkflowStep(str, enum.Enum):
