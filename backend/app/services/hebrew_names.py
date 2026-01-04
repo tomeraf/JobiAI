@@ -21,231 +21,543 @@ logger = get_logger(__name__)
 
 # Mapping of English transliterations to Hebrew names
 # Format: english_lowercase -> hebrew_script
+# ~500+ names from Behind the Name database and other sources
 ENGLISH_TO_HEBREW_NAMES = {
-    # Male names
-    "avi": "אבי",
-    "aviv": "אביב",
-    "avigdor": "אביגדור",
-    "aviad": "אביעד",
-    "aviram": "אבירם",
-    "avishai": "אבישי",
-    "avraham": "אברהם",
+    # === A ===
+    "aaron": "אהרון",
+    "abigail": "אביגיל",
     "abraham": "אברהם",
     "adam": "אדם",
-    "aharon": "אהרון",
-    "aaron": "אהרון",
-    "uri": "אורי",
-    "oren": "אורן",
-    "eyal": "אייל",
-    "itai": "איתי",
-    "itay": "איתי",
-    "itan": "איתן",
-    "ethan": "איתן",
-    "alon": "אלון",
-    "eli": "אלי",
-    "eliyahu": "אליהו",
-    "amir": "אמיר",
-    "erez": "ארז",
-    "ariel": "אריאל",
-    "arie": "אריה",
-    "asher": "אשר",
-    "boaz": "בועז",
-    "beni": "בני",
-    "benny": "בני",
-    "benjamin": "בנימין",
-    "binyamin": "בנימין",
-    "gad": "גד",
-    "gideon": "גדעון",
-    "guy": "גיא",
-    "gil": "גיל",
-    "gilad": "גלעד",
-    "david": "דוד",
-    "dor": "דור",
-    "dani": "דני",
-    "danny": "דני",
-    "daniel": "דניאל",
-    "dan": "דן",
-    "harel": "הראל",
-    "ziv": "זיו",
-    "hai": "חי",
-    "haim": "חיים",
-    "chaim": "חיים",
-    "yair": "יאיר",
-    "yigal": "יגאל",
-    "yehonatan": "יהונתן",
-    "yehuda": "יהודה",
-    "yoav": "יואב",
-    "yuval": "יובל",
-    "yochai": "יוחאי",
-    "yonatan": "יונתן",
-    "jonathan": "יונתן",
-    "yosi": "יוסי",
-    "yossi": "יוסי",
-    "yosef": "יוסף",
-    "joseph": "יוסף",
-    "yoram": "יורם",
-    "yishai": "ישי",
-    "israel": "ישראל",
-    "liron": "לירון",
-    "maor": "מאור",
-    "michael": "מיכאל",
-    "menachem": "מנחם",
-    "maayan": "מעיין",
-    "moshe": "משה",
-    "nadav": "נדב",
-    "noam": "נועם",
-    "nir": "ניר",
-    "nitzan": "ניצן",
-    "natan": "נתן",
-    "nathan": "נתן",
+    "adara": "אדרה",
     "adi": "עדי",
-    "ido": "עידו",
+    "adina": "עדינה",
+    "adir": "אדיר",
+    "adva": "אדוה",
+    "agam": "אגם",
+    "aharon": "אהרון",
+    "ahava": "אהבה",
+    "ahuva": "אהובה",
+    "akiva": "עקיבא",
+    "aliya": "עליה",
+    "aliza": "עליזה",
+    "alma": "עלמה",
+    "almog": "אלמוג",
+    "alon": "אלון",
+    "alona": "אלונה",
+    "ami": "עמי",
+    "amichai": "עמיחי",
+    "amir": "אמיר",
     "amit": "עמית",
-    "omri": "עמרי",
-    "eran": "ערן",
-    "peleg": "פלג",
-    "tzachi": "צחי",
-    "kobi": "קובי",
-    "ron": "רון",
-    "roi": "רועי",
-    "roy": "רועי",
-    "raz": "רז",
-    "shai": "שי",
-    "shay": "שי",
-    "sagi": "שגיא",
-    "shachar": "שחר",
-    "shlomi": "שלומי",
-    "shlomo": "שלמה",
-    "solomon": "שלמה",
-    "shmuel": "שמואל",
-    "samuel": "שמואל",
-    "shimon": "שמעון",
-    "simon": "שמעון",
-    "tom": "תום",
-    "tomer": "תומר",
-
-    # Female names
+    "amnon": "אמנון",
+    "amos": "עמוס",
+    "amram": "עמרם",
+    "anan": "ענן",
+    "anat": "ענת",
+    "arie": "אריה",
+    "ariel": "אריאל",
+    "arik": "אריק",
+    "arye": "אריה",
+    "asa": "אסא",
+    "asaf": "אסף",
+    "asher": "אשר",
+    "atalia": "עתליה",
+    "atara": "עטרה",
+    "avi": "אבי",
+    "avia": "אביה",
+    "aviad": "אביעד",
+    "avidan": "אבידן",
+    "aviel": "אביאל",
     "avigail": "אביגיל",
-    "abigail": "אביגיל",
+    "avigdor": "אביגדור",
+    "avihu": "אביהוא",
+    "aviram": "אבירם",
     "avishag": "אבישג",
-    "ora": "אורה",
-    "orit": "אורית",
-    "orli": "אורלי",
-    "ilana": "אילנה",
-    "ilat": "אילת",
-    "eilat": "אילת",
-    "iris": "איריס",
-    "esther": "אסתר",
-    "efrat": "אפרת",
+    "avishai": "אבישי",
+    "avital": "אביטל",
+    "aviv": "אביב",
+    "aviva": "אביבה",
+    "avner": "אבנר",
+    "avraham": "אברהם",
+    "avram": "אברם",
+    "avshalom": "אבשלום",
+    "ayal": "איל",
+    "ayala": "איילה",
+    "ayelet": "איילת",
+    "azaria": "עזריה",
+    # === B ===
+    "bar": "בר",
+    "barak": "ברק",
+    "baruch": "ברוך",
+    "batel": "בת־אל",
+    "batsheva": "בת־שבע",
+    "batya": "בתיה",
+    "beeri": "בארי",
+    "benaya": "בניה",
+    "beni": "בני",
+    "benjamin": "בנימין",
+    "benny": "בני",
+    "beracha": "ברכה",
+    "binyamin": "בנימין",
+    "boaz": "בועז",
+    "bosmat": "בשמת",
     "bracha": "ברכה",
-    "geula": "גאולה",
-    "gila": "גילה",
-    "dvora": "דבורה",
-    "deborah": "דבורה",
-    "dalia": "דליה",
-    "dana": "דנה",
-    "danit": "דנית",
+    # === C ===
+    "carmel": "כרמל",
+    "carmit": "כרמית",
+    "chaim": "חיים",
+    "chana": "חנה",
+    "chava": "חוה",
+    "chaya": "חיה",
+    "chen": "חן",
+    "chesed": "חסד",
+    # === D ===
     "dafna": "דפנה",
+    "dalia": "דליה",
+    "dalit": "דלית",
+    "dan": "דן",
+    "dana": "דנה",
+    "dani": "דני",
+    "daniel": "דניאל",
+    "daniela": "דניאלה",
+    "danit": "דנית",
+    "danny": "דני",
+    "danya": "דניה",
+    "dar": "דר",
     "daphne": "דפנה",
-    "hagar": "הגר",
+    "david": "דוד",
+    "deborah": "דבורה",
+    "dekel": "דקל",
+    "dikla": "דקלה",
+    "dina": "דינה",
+    "dor": "דור",
+    "dori": "דורי",
+    "dorit": "דורית",
+    "doron": "דורון",
+    "dov": "דוב",
+    "dror": "דרור",
+    "drorit": "דרורית",
+    "dvora": "דבורה",
+    # === E ===
+    "eden": "עדן",
+    "edna": "עדנה",
+    "efraim": "אפרים",
+    "efrat": "אפרת",
+    "ehud": "אהוד",
+    "eilat": "אילת",
+    "eilon": "אילון",
+    "eitan": "איתן",
+    "elazar": "אלעזר",
+    "elchanan": "אלחנן",
+    "eldad": "אלדד",
+    "eli": "אלי",
+    "eliana": "אליענה",
+    "eliav": "אליאב",
+    "eliezer": "אליעזר",
+    "elijah": "אליהו",
+    "elior": "אליאור",
+    "eliora": "אליאורה",
+    "elisheva": "אלישבע",
+    "eliya": "אליה",
+    "eliyahu": "אליהו",
+    "ephraim": "אפרים",
+    "eran": "ערן",
+    "erez": "ארז",
+    "ester": "אסתר",
+    "esther": "אסתר",
+    "ethan": "איתן",
+    "eve": "חוה",
+    "eviatar": "אביתר",
+    "evyatar": "אביתר",
+    "eyal": "איל",
+    "eytan": "איתן",
+    "ezra": "עזרא",
+    # === G ===
+    "gad": "גד",
+    "gai": "גיא",
+    "gal": "גל",
+    "gali": "גלי",
+    "galia": "גליה",
+    "galit": "גלית",
+    "gavriel": "גבריאל",
+    "gaya": "גאיה",
+    "gefen": "גפן",
+    "geula": "גאולה",
+    "gideon": "גדעון",
+    "gidon": "גדעון",
+    "gil": "גיל",
+    "gila": "גילה",
+    "gilad": "גלעד",
+    "gili": "גילי",
+    "guy": "גיא",
+    # === H ===
+    "hadar": "הדר",
     "hadas": "הדס",
     "hadasa": "הדסה",
     "hadassa": "הדסה",
-    "hila": "הילה",
+    "hadassah": "הדסה",
+    "hagar": "הגר",
     "hagit": "חגית",
-    "hava": "חוה",
-    "eve": "חוה",
-    "chana": "חנה",
+    "hai": "חי",
+    "haim": "חיים",
+    "hallel": "הלל",
     "hana": "חנה",
     "hannah": "חנה",
-    "tal": "טל",
-    "tali": "טלי",
-    "yehudit": "יהודית",
-    "judith": "יהודית",
-    "yael": "יעל",
-    "yafa": "יפה",
-    "yafit": "יפית",
-    "yarden": "ירדן",
+    "harel": "הראל",
+    "hava": "חוה",
+    "hayim": "חיים",
+    "hed": "הד",
+    "herut": "חרות",
+    "hevel": "הבל",
+    "hila": "הילה",
+    "hili": "הילי",
+    "hillel": "הלל",
+    "hodia": "הודיה",
+    "hyam": "חיים",
+    # === I ===
+    "idan": "עידן",
+    "ido": "עידו",
+    "ilai": "עילאי",
+    "ilan": "אילן",
+    "ilana": "אילנה",
+    "ilanit": "אילנית",
+    "ilat": "אילת",
+    "immanuel": "עמנואל",
+    "imri": "אמרי",
+    "inbal": "ענבל",
+    "inbar": "ענבר",
+    "ira": "עירא",
+    "iris": "איריס",
+    "irit": "עירית",
+    "israel": "ישראל",
+    "itai": "איתי",
+    "itamar": "איתמר",
+    "itan": "איתן",
+    "itay": "איתי",
+    "itzhak": "יצחק",
+    "iyov": "איוב",
+    # === J ===
     "jardena": "ירדנה",
-    "carmel": "כרמל",
-    "carmit": "כרמית",
+    "jonathan": "יונתן",
+    "joseph": "יוסף",
+    "judith": "יהודית",
+    # === K ===
+    "karmel": "כרמל",
+    "kelila": "כלילה",
+    "keren": "קרן",
+    "keshet": "קשת",
+    "kfir": "כפיר",
+    "kineret": "כנרת",
+    "kobi": "קובי",
+    # === L ===
+    "lavi": "לביא",
     "lea": "לאה",
     "leah": "לאה",
     "lee": "לי",
+    "lev": "לב",
+    "levana": "לבנה",
+    "levi": "לוי",
     "li": "לי",
+    "lian": "ליאן",
+    "liat": "ליאת",
+    "libi": "ליבי",
+    "liel": "ליאל",
+    "lihi": "ליהי",
+    "lilach": "לילך",
+    "limor": "לימור",
     "lior": "ליאור",
     "liora": "ליאורה",
-    "liat": "ליאת",
-    "limor": "לימור",
+    "liorit": "ליאורית",
+    "liraz": "לירז",
+    "liron": "לירון",
+    "lital": "ליטל",
+    "livna": "לבנה",
+    "livnat": "לבנת",
+    # === M ===
+    "maayan": "מעיין",
+    "malachi": "מלאכי",
+    "malka": "מלכה",
+    "maor": "מאור",
+    "margalit": "מרגלית",
+    "matan": "מתן",
+    "matityahu": "מתתיהו",
     "maya": "מאיה",
+    "meir": "מאיר",
+    "meira": "מאירה",
+    "meirit": "מאירית",
+    "meital": "מיטל",
+    "melech": "מלך",
+    "menachem": "מנחם",
+    "menahem": "מנחם",
+    "menashe": "מנשה",
+    "menuha": "מנוחה",
+    "merav": "מירב",
+    "meshulam": "משולם",
+    "meyer": "מאיר",
+    "michael": "מיכאל",
+    "michaela": "מיכאלה",
+    "michal": "מיכל",
+    "mikhael": "מיכאל",
+    "miri": "מירי",
+    "miriam": "מרים",
+    "mirit": "מירית",
+    "miron": "מירון",
+    "miryam": "מרים",
     "mor": "מור",
     "moran": "מורן",
-    "michal": "מיכל",
-    "merav": "מירב",
-    "miri": "מירי",
-    "meitar": "מיתר",
-    "noga": "נגה",
+    "mordecai": "מרדכי",
+    "moria": "מוריה",
+    "moshe": "משה",
+    "moti": "מוטי",
+    # === N ===
+    "naama": "נעמה",
+    "nachman": "נחמן",
+    "nachum": "נחום",
+    "nadav": "נדב",
+    "naftali": "נפתלי",
+    "nahal": "נחל",
+    "naomi": "נעמי",
+    "natan": "נתן",
+    "nathan": "נתן",
+    "nava": "נאוה",
+    "nechama": "נחמה",
+    "nehorai": "נהוראי",
+    "neria": "נריה",
+    "neta": "נטע",
+    "netanel": "נתנאל",
+    "netta": "נטע",
+    "nili": "נילי",
+    "nir": "ניר",
+    "nitai": "ניתאי",
+    "nitza": "ניצה",
+    "nitzan": "ניצן",
+    "niv": "ניב",
     "noa": "נועה",
+    "noach": "נח",
     "noah": "נועה",
+    "noam": "נועם",
     "nofar": "נופר",
+    "noga": "נגה",
+    "noy": "נוי",
+    "noya": "נויה",
     "nurit": "נורית",
-    "natali": "נטלי",
-    "natalie": "נטלי",
-    "sigal": "סיגל",
-    "sivan": "סיון",
-    "eden": "עדן",
-    "edna": "עדנה",
-    "inbal": "ענבל",
-    "anat": "ענת",
+    # === O ===
+    "odelia": "אודליה",
+    "ofek": "אופק",
+    "ofer": "עופר",
+    "ofir": "אופיר",
+    "ofira": "אופירה",
     "ofra": "עפרה",
+    "ofri": "עפרי",
+    "ohad": "אוהד",
+    "omer": "עומר",
+    "omri": "עמרי",
+    "ophir": "אופיר",
+    "or": "אור",
+    "ora": "אורה",
+    "orel": "אוראל",
+    "oren": "אורן",
+    "ori": "אורי",
+    "orit": "אורית",
+    "orli": "אורלי",
+    "orna": "ארנה",
+    "osher": "אושר",
+    "oz": "עוז",
+    # === P ===
+    "paz": "פז",
+    "peleg": "פלג",
     "pnina": "פנינה",
-    "tzofia": "צופיה",
-    "sophia": "צופיה",
-    "keren": "קרן",
-    "rivka": "רבקה",
-    "rebecca": "רבקה",
-    "ravit": "רוית",
-    "ronit": "רונית",
-    "ruth": "רות",
+    # === R ===
+    "raanan": "רענן",
     "rachel": "רחל",
+    "rani": "רני",
+    "ravid": "רביד",
+    "ravit": "רוית",
+    "raz": "רז",
+    "rebecca": "רבקה",
+    "reuben": "ראובן",
+    "reut": "רעות",
+    "rina": "רינה",
     "rinat": "רינת",
-    "shulamit": "שולמית",
+    "rivka": "רבקה",
+    "roi": "רועי",
+    "rom": "רום",
+    "romi": "רומי",
+    "ron": "רון",
+    "rona": "רונה",
+    "ronen": "רונן",
+    "roni": "רוני",
+    "ronit": "רונית",
+    "rotem": "רותם",
+    "roy": "רועי",
+    "rut": "רות",
+    "ruth": "רות",
+    # === S ===
+    "saar": "סער",
+    "sagi": "שגיא",
+    "sagit": "שגית",
+    "samuel": "שמואל",
+    "sapir": "ספיר",
+    "sara": "שרה",
+    "sarah": "שרה",
+    "sarit": "שרית",
+    "shachar": "שחר",
+    "shai": "שי",
+    "shaked": "שקד",
+    "shalev": "שלו",
+    "shalom": "שלום",
+    "shamira": "שמירה",
+    "shani": "שני",
+    "sharon": "שרון",
+    "shaul": "שאול",
+    "shay": "שי",
+    "shifra": "שפרה",
+    "shimon": "שמעון",
+    "shimshon": "שמשון",
     "shir": "שיר",
     "shira": "שירה",
     "shiri": "שירי",
-    "shani": "שני",
-    "sara": "שרה",
-    "sarah": "שרה",
-    "sharon": "שרון",
+    "shirli": "שירלי",
+    "shlomi": "שלומי",
+    "shlomit": "שלומית",
+    "shlomo": "שלמה",
+    "shmuel": "שמואל",
+    "shoshana": "שושנה",
+    "shulamit": "שולמית",
+    "sigal": "סיגל",
+    "simcha": "שמחה",
+    "simon": "שמעון",
+    "sivan": "סיון",
+    "smadar": "סמדר",
+    "solomon": "שלמה",
+    "sophia": "צופיה",
+    "stav": "סתיו",
+    # === T ===
+    "tahel": "תהל",
     "tair": "תאיר",
-    "tehila": "תהילה",
+    "tal": "טל",
+    "tali": "טלי",
+    "talia": "טליה",
+    "tam": "תם",
     "tamar": "תמר",
     "tami": "תמי",
-
-    # Unisex names (appear in both lists, use most common form)
-    "chen": "חן",
-    "omer": "עומר",
-    "or": "אור",
+    "tamir": "תמיר",
+    "tehila": "תהילה",
+    "tikva": "תקוה",
+    "tirtza": "תרצה",
+    "tohar": "טוהר",
+    "tom": "תום",
+    "tomer": "תומר",
+    "tova": "טובה",
+    "tovia": "טוביה",
+    "tuvya": "טוביה",
+    "tzachi": "צחי",
+    "tzafrir": "צפריר",
+    "tzila": "צילה",
+    "tzion": "ציון",
+    "tzipora": "ציפורה",
+    "tzippora": "ציפורה",
+    "tzivya": "צביה",
+    "tzvi": "צבי",
+    "tzvia": "צביה",
+    "tzofia": "צופיה",
+    # === U ===
+    "udi": "אודי",
+    "uri": "אורי",
+    "uria": "אוריה",
+    "uriel": "אוריאל",
+    "uzi": "עוזי",
+    # === V ===
+    "varda": "ורדה",
+    "vered": "ורד",
+    # === Y ===
+    "yaakov": "יעקב",
+    "yaara": "יערה",
+    "yael": "יעל",
+    "yaen": "יען",
+    "yafa": "יפה",
+    "yafit": "יפית",
+    "yahav": "יהב",
+    "yair": "יאיר",
+    "yakira": "יקירה",
+    "yakov": "יעקב",
+    "yali": "יהלי",
     "yam": "ים",
-    "gal": "גל",
-    "noy": "נוי",
-    "bar": "בר",
-    "ofek": "אופק",
-    "rotem": "רותם",
-    "agam": "אגם",
-    "shaked": "שקד",
+    "yanai": "ינאי",
+    "yaniv": "יניב",
+    "yarden": "ירדן",
+    "yardena": "ירדנה",
+    "yaron": "ירון",
+    "yarona": "ירונה",
+    "yasmin": "יסמין",
+    "yechezkel": "יחזקאל",
+    "yechiel": "יחיאל",
+    "yedidya": "ידידיה",
+    "yehonatan": "יהונתן",
+    "yehoshua": "יהושע",
+    "yehuda": "יהודה",
+    "yehudi": "יהודי",
+    "yehudit": "יהודית",
+    "yemima": "ימימה",
+    "yeshayahu": "ישעיהו",
+    "yiftach": "יפתח",
+    "yigal": "יגאל",
+    "yinon": "ינון",
+    "yishai": "ישי",
+    "yisrael": "ישראל",
+    "yissakhar": "יששכר",
+    "yitzhak": "יצחק",
+    "yoav": "יואב",
+    "yochanan": "יוחנן",
+    "yochai": "יוחאי",
+    "yocheved": "יוכבד",
+    "yoel": "יואל",
+    "yona": "יונה",
+    "yonatan": "יונתן",
+    "yoni": "יוני",
+    "yonina": "יונינה",
+    "yonit": "יונית",
+    "yoram": "יורם",
+    "yosef": "יוסף",
+    "yosi": "יוסי",
+    "yossi": "יוסי",
+    "yuli": "יולי",
+    "yuval": "יובל",
+    # === Z ===
+    "zahara": "זהרה",
+    "zeev": "זאב",
+    "ziv": "זיו",
+    "ziva": "זיוה",
+    "zivit": "זיוית",
+    "zohar": "זוהר",
+    # === Additional common variants ===
+    "natali": "נטלי",
+    "natalie": "נטלי",
 }
+
+# Runtime cache for database translations (populated by async functions)
+# This allows the sync function to access DB translations without async DB calls
+_db_translations_cache: dict[str, str] = {}
+
+
+def add_to_cache(english_name: str, hebrew_name: str) -> None:
+    """Add a translation to the runtime cache for sync access."""
+    _db_translations_cache[english_name.lower()] = hebrew_name
+    logger.debug(f"Added to cache: {english_name.lower()} -> {hebrew_name}")
 
 
 def translate_name_to_hebrew_sync(english_name: str) -> str | None:
     """
-    Translate an English name to Hebrew script (synchronous, dict-only).
+    Translate an English name to Hebrew script (synchronous).
+
+    Checks:
+    1. Built-in dictionary
+    2. Runtime cache (populated from DB by async functions)
 
     Args:
         english_name: Name in English (e.g., "Tomer")
 
     Returns:
-        Hebrew name if found in built-in dictionary, None otherwise
+        Hebrew name if found, None otherwise
     """
     if not english_name:
         return None
@@ -258,15 +570,20 @@ def translate_name_to_hebrew_sync(english_name: str) -> str | None:
         logger.debug(f"Name '{english_name}' is already in Hebrew")
         return english_name.split()[0]  # Return original first name
 
-    # Look up in dictionary
+    # 1. Look up in built-in dictionary
     hebrew_name = ENGLISH_TO_HEBREW_NAMES.get(first_name)
-
     if hebrew_name:
-        logger.debug(f"Translated '{first_name}' to Hebrew: {hebrew_name}")
+        logger.debug(f"Translated '{first_name}' to Hebrew from dict: {hebrew_name}")
         return hebrew_name
 
-    # Name not found in dictionary
-    logger.debug(f"No Hebrew translation found for '{first_name}' in built-in dictionary")
+    # 2. Look up in runtime cache (populated from DB)
+    hebrew_name = _db_translations_cache.get(first_name)
+    if hebrew_name:
+        logger.debug(f"Translated '{first_name}' to Hebrew from cache: {hebrew_name}")
+        return hebrew_name
+
+    # Name not found
+    logger.debug(f"No Hebrew translation found for '{first_name}'")
     return None
 
 
@@ -298,13 +615,21 @@ async def translate_name_to_hebrew(english_name: str, db: AsyncSession) -> str |
         logger.debug(f"Translated '{first_name}' to Hebrew from dictionary: {hebrew_name}")
         return hebrew_name
 
-    # 2. Check database for user-provided translation
+    # 2. Check runtime cache (populated from DB)
+    cached = _db_translations_cache.get(first_name)
+    if cached:
+        logger.debug(f"Translated '{first_name}' to Hebrew from cache: {cached}")
+        return cached
+
+    # 3. Check database for user-provided translation
     result = await db.execute(
         select(HebrewName).where(HebrewName.english_name == first_name)
     )
     db_entry = result.scalar_one_or_none()
 
     if db_entry:
+        # Add to cache for sync access
+        add_to_cache(first_name, db_entry.hebrew_name)
         logger.debug(f"Translated '{first_name}' to Hebrew from DB: {db_entry.hebrew_name}")
         return db_entry.hebrew_name
 
@@ -317,6 +642,8 @@ async def save_hebrew_name(english_name: str, hebrew_name: str, db: AsyncSession
     """
     Save a user-provided Hebrew name translation to the database.
 
+    Also adds to the runtime cache for immediate sync access.
+
     Args:
         english_name: English name (will be lowercased)
         hebrew_name: Hebrew translation
@@ -327,7 +654,10 @@ async def save_hebrew_name(english_name: str, hebrew_name: str, db: AsyncSession
     """
     english_lower = english_name.strip().lower()
 
-    # Check if already exists
+    # Add to runtime cache immediately (so sync functions can access it)
+    add_to_cache(english_lower, hebrew_name)
+
+    # Check if already exists in DB
     result = await db.execute(
         select(HebrewName).where(HebrewName.english_name == english_lower)
     )
@@ -385,3 +715,29 @@ def is_hebrew_text(text: str) -> bool:
     if not text:
         return False
     return any('\u0590' <= char <= '\u05FF' for char in text)
+
+
+async def load_all_translations_to_cache(db: AsyncSession) -> int:
+    """
+    Load all database translations into the runtime cache.
+
+    Call this at startup to ensure sync functions can access DB translations.
+
+    Args:
+        db: Database session
+
+    Returns:
+        Number of translations loaded
+    """
+    result = await db.execute(select(HebrewName))
+    entries = result.scalars().all()
+
+    count = 0
+    for entry in entries:
+        add_to_cache(entry.english_name, entry.hebrew_name)
+        count += 1
+
+    if count > 0:
+        logger.info(f"Loaded {count} Hebrew name translations from database to cache")
+
+    return count

@@ -20,7 +20,7 @@ from httpx import AsyncClient, ASGITransport
 from app.database import Base, get_db
 from app.main import app
 from app.models.job import Job, JobStatus
-from app.models.contact import Contact, Gender
+from app.models.contact import Contact
 from app.models.template import Template
 from app.models.activity import ActivityLog, ActionType
 from app.models.site_selector import SiteSelector
@@ -110,7 +110,6 @@ async def sample_contact(db_session: AsyncSession, sample_job: Job) -> Contact:
         name="Test User",
         company="Test Company",
         position="Developer",
-        gender=Gender.MALE,
         is_connection=True,
         job_id=sample_job.id
     )
@@ -125,9 +124,7 @@ async def sample_template(db_session: AsyncSession) -> Template:
     """Create a sample template for testing."""
     template = Template(
         name="Test Template",
-        content_male="היי {name}, ראיתי שאתה עובד ב-{company}!",
-        content_female="היי {name}, ראיתי שאת עובדת ב-{company}!",
-        content_neutral="שלום {name}, ראיתי את הקשר שלך ל-{company}!",
+        content="היי {name}, ראיתי שאתה עובד ב-{company}!",
         is_default=True
     )
     db_session.add(template)

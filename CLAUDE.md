@@ -1,270 +1,555 @@
 # JobiAI - LinkedIn Job Application Bot
 
+## IMPORTANT: Development Environment
+- **Backend and Frontend run LOCALLY** (not in Docker)
+- **Only PostgreSQL runs in Docker** (via docker-compose)
+- **Backend logs are at**: `c:\projects\JobiAI\backend\backend.log`
+- **Start everything with**: `start-dev.bat` (opens CMD windows with live output)
+- **Restart with**: `restart-dev.bat` (stops and starts all services)
+- **The app runs in CMD windows** - check these for live errors/logs when debugging
+- **Backend port**: 9000 (local uvicorn)
+- **Frontend port**: 3000 (local Vite)
+
 ## Project Overview
 A bot that helps users apply for jobs by leveraging LinkedIn connections. Users submit job URLs through a web app, and the bot automatically finds and contacts relevant people at the target company.
 
 ## Tech Stack
-- **Backend**: Python, FastAPI, PostgreSQL, SQLAlchemy, Alembic
-- **Frontend**: React, TypeScript, Vite
+- **Backend**: Python 3.11, FastAPI, PostgreSQL, SQLAlchemy 2.0, Alembic
+- **Frontend**: React 18, TypeScript, Vite, TailwindCSS, React Query
 - **Automation**: Playwright with playwright-stealth (anti-detection)
 - **Containerization**: Docker, Docker Compose
 
 ## Project Structure
 ```
 JobiAI/
-├── backend/           # FastAPI Python backend
+├── backend/
 │   ├── app/
-│   │   ├── api/       # API route handlers
-│   │   ├── models/    # SQLAlchemy models
-│   │   ├── services/  # Business logic
-│   │   │   └── linkedin/  # LinkedIn automation
-│   │   └── utils/     # Helpers
-│   ├── browser_data/  # Persistent LinkedIn session
-│   └── alembic/       # Database migrations
-├── frontend/          # React web dashboard
+│   │   ├── api/              # API route handlers
+│   │   │   ├── jobs.py       # Job CRUD + workflow triggers
+│   │   │   ├── templates.py  # Message template management
+│   │   │   ├── selectors.py  # Site selector CRUD
+│   │   │   ├── logs.py       # Activity log viewing
+│   │   │   ├── auth.py       # LinkedIn authentication
+│   │   │   └── hebrew_names.py # Name translation API
+│   │   ├── models/           # SQLAlchemy models
+│   │   │   ├── job.py        # Job with status + workflow_step
+│   │   │   ├── contact.py    # LinkedIn contacts
+│   │   │   ├── template.py   # Message templates
+│   │   │   ├── site_selector.py # URL pattern learning
+│   │   │   ├── activity.py   # Activity logs
+│   │   │   └── hebrew_name.py # Name translations
+│   │   ├── services/
+│   │   │   ├── job_processor.py      # Company extraction from URLs
+│   │   │   ├── workflow_orchestrator.py # Main workflow engine
+│   │   │   ├── hebrew_names.py       # Name translation service
+│   │   │   ├── job_parser.py         # URL parsing utilities
+│   │   │   └── linkedin/
+│   │   │       ├── client.py         # Playwright browser automation
+│   │   │       ├── search.py         # LinkedIn search wrapper
+│   │   │       ├── messaging.py      # Direct messaging
+│   │   │       └── connections.py    # Connection requests
+│   │   └── utils/
+│   │       └── logger.py     # Logging utilities
+│   ├── alembic/              # Database migrations
+│   └── linkedin_data/        # Persistent browser session
+├── frontend/
+│   ├── src/
+│   │   ├── api/client.ts     # Axios API wrapper
+│   │   ├── components/Layout.tsx
+│   │   └── pages/
+│   │       ├── Dashboard.tsx # Stats + activity feed
+│   │       ├── Jobs.tsx      # Job management + workflow UI
+│   │       ├── Templates.tsx # Template editor
+│   │       ├── Logs.tsx      # Activity log viewer
+│   │       └── Settings.tsx  # LinkedIn auth + selectors
 └── docker-compose.yml
 ```
 
 ---
 
-## Current Implementation Status
-
-### ✅ COMPLETED FEATURES
-
-#### 1. Job URL Submission & Processing
-- Submit job URLs via web dashboard
-- Background processing with status updates
-- Job statuses: PENDING → PROCESSING → COMPLETED/NEEDS_INPUT/FAILED
-- Retry failed jobs, delete jobs
-
-#### 2. Smart Job Site Parser (Pattern-Based Learning)
-- **Pre-configured platforms**: Greenhouse, Lever, Workday, Ashby, SmartRecruiters, Breezy, BambooHR, Recruitee, ApplyToJob, iCIMS
-- **URL pattern extraction**: Extracts company name from URL structure (subdomain or path)
-- **Learning system**: When unknown site encountered:
-  - User classifies as "Company Website" or "Job Platform"
-  - User provides company name (+ platform name if platform)
-  - System learns URL pattern and saves for future auto-extraction
-- **No CSS scraping**: Pure URL-based extraction (more reliable)
-
-#### 3. LinkedIn Authentication
-- Persistent browser session saved to `browser_data/`
-- Manual login on first run, auto-login thereafter
-- Login status check via API
-- Stealth mode with anti-detection measures
-
-#### 4. LinkedIn Automation (Fully Working)
-- **Connection Search**: Search existing 1st degree connections by company
-- **People Search**: Search LinkedIn for 2nd/3rd+ degree people at a company
-- **Smart Messaging**:
-  - Detects existing message history before sending
-  - Skips contacts already messaged (prevents duplicates)
-  - Properly closes chat modals after checking
-- **Connection Requests**: Send requests to 2nd/3rd+ degree with optional notes
-- **Multi-Degree Workflow**:
-  1. Search 1st degree → send messages
-  2. If all 1st degree skipped (existing history) → try 2nd degree
-  3. If no 2nd degree with Connect button → try 3rd+ degree
-  4. Sends connection requests to 2nd/3rd+ degree people
-
-#### 5. Gender-Aware Messaging
-- Templates with male/female/neutral variants
-- Gender detection from:
-  - Hebrew name database (200+ names)
-  - International name analysis (gender-guesser library)
-- Template variables: `{name}`, `{company}`
-
-#### 6. Activity Logging
-- 9 action types tracked:
-  - JOB_SUBMITTED, COMPANY_EXTRACTED, COMPANY_INPUT_NEEDED
-  - SELECTOR_LEARNED, CONNECTION_SEARCH, CONNECTION_FOUND
-  - CONNECTION_REQUEST_SENT, MESSAGE_SENT, LINKEDIN_SEARCH, ERROR
-- Dashboard with stats and recent activity
-- Filter by action type, job, date
-
-#### 7. Frontend Dashboard
-- **Jobs Page**: Submit URLs, view status, retry/delete, company input modal, play button to trigger workflow
-- **Dashboard**: Stats cards, recent activity feed
-- **Templates Page**: CRUD for message templates with preview
-- **Settings Page**: LinkedIn login/logout, site selector management
-- **Logs Page**: Activity history with filters
-
-#### 8. Database Models
-- `jobs` - URL, company, status, timestamps, pending_hebrew_names
-- `contacts` - LinkedIn profile, gender, connection/message status
-- `templates` - Gender-specific message content
-- `site_selectors` - Domain patterns, site type, learned URL patterns
-- `activity_logs` - Action tracking with JSON details
-- `hebrew_names` - Hebrew to English name translations
-
-#### 9. End-to-End Workflow Orchestration
-- **Full workflow from job submission to outreach**:
-  1. Extract company name from job URL
-  2. Search LinkedIn for people at that company
-  3. Message 1st degree connections (with history check)
-  4. Send connection requests to 2nd/3rd+ degree
-- **Workflow state tracking**: Jobs track current step
-- **Overlay management**: Closes open chat dialogs before automation
-- **Hebrew name translation**: Pauses workflow if unknown Hebrew names found
-
----
-
-### ❌ TODO: Features Still Needed
-
-#### Priority 1: Contacts API & Management
-- [ ] **Contacts API endpoints**
-  - `GET /api/contacts` - List all contacts
-  - `GET /api/jobs/{id}/contacts` - Contacts found for a job
-  - `PUT /api/contacts/{id}` - Update contact status
-  - `DELETE /api/contacts/{id}` - Delete contact
-- [ ] **Contacts Dashboard UI**
-  - View contacts per job
-  - See message/connection status
-  - Manual retry for failed messages
-
-#### Priority 2: Rate Limiting & Safety
-- [ ] **Enforce LinkedIn limits in code**
-  - Track daily message count (max ~150/day)
-  - Track weekly connection requests (max ~100/week)
-  - Pause/warn when approaching limits
-- [ ] **Backoff on errors**
-  - Detect rate limit responses from LinkedIn
-  - Auto-pause and retry with exponential backoff
-
-#### Priority 3: Testing & Polish
-- [ ] **Integration tests**
-  - Test full workflow with mocked LinkedIn
-  - Test selector learning flow
-- [ ] **Error recovery**
-  - Handle LinkedIn session expiry gracefully
-
----
-
 ## Database Schema
 
-### Tables
-- `jobs` - Submitted job URLs and status
-- `contacts` - People contacted/added on LinkedIn
-- `activity_logs` - All bot actions (for dashboard)
-- `templates` - Message templates (male/female variants)
-- `site_selectors` - Learned URL patterns per job site domain
+### Job Model (`jobs` table)
+```
+id                    INT PK
+url                   TEXT (job posting URL)
+company_name          VARCHAR (extracted or user-provided)
+job_title             VARCHAR (optional)
+status                ENUM: pending|processing|needs_input|completed|failed|aborted|done|rejected
+workflow_step         ENUM: company_extraction|search_connections|needs_hebrew_names|
+                            message_connections|waiting_for_reply|search_linkedin|
+                            send_requests|waiting_for_accept|done
+error_message         TEXT (if failed)
+pending_hebrew_names  JSON ARRAY (names needing translation)
+last_reply_check_at   DATETIME (when replies were last checked)
+created_at            DATETIME
+processed_at          DATETIME
+```
 
-### Site Selector Fields
-- `domain` - The job site domain (e.g., "greenhouse.io")
-- `site_type` - "company" or "platform"
-- `company_name` - For company sites, the fixed company name
-- `platform_name` - For platforms, the platform name (e.g., "Greenhouse")
-- `url_pattern` - Regex to extract company from URL
+### Contact Model (`contacts` table)
+```
+id                      INT PK
+linkedin_url            TEXT UNIQUE (profile URL)
+name                    VARCHAR
+company                 VARCHAR
+position                VARCHAR
+is_connection           BOOLEAN (1st degree = true)
+connection_requested_at DATETIME
+message_sent_at         DATETIME
+message_content         TEXT
+reply_received_at       DATETIME
+job_id                  INT FK → jobs
+created_at              DATETIME
+```
 
-## Anti-Detection Strategy
-- Use `playwright-stealth` plugin
-- Random delays between actions (2-5 seconds)
-- Human-like behavior patterns
-- Persistent browser profile
-- Respect LinkedIn limits (~100 connections/week, ~150 messages/day)
-- Run in headed mode (visible browser)
+### Template Model (`templates` table)
+```
+id          INT PK
+name        VARCHAR
+content     TEXT (supports {name}, {company} placeholders)
+is_default  BOOLEAN
+created_at  DATETIME
+updated_at  DATETIME
+```
+
+### SiteSelector Model (`site_selectors` table)
+```
+id              INT PK
+domain          VARCHAR UNIQUE
+site_type       ENUM: company|platform
+company_name    VARCHAR (for company sites)
+platform_name   VARCHAR (e.g., "Greenhouse")
+url_pattern     TEXT (regex for company extraction)
+example_url     TEXT
+example_company TEXT
+created_at      DATETIME
+last_used_at    DATETIME
+```
+
+### HebrewName Model (`hebrew_names` table)
+```
+id            INT PK
+english_name  VARCHAR UNIQUE
+hebrew_name   VARCHAR
+created_at    DATETIME
+```
+
+### ActivityLog Model (`activity_logs` table)
+```
+id          INT PK
+action_type ENUM: job_submitted|company_extracted|company_input_needed|
+                  selector_learned|connection_search|connection_found|
+                  connection_request_sent|message_sent|linkedin_search|error
+description TEXT
+details     JSON
+job_id      INT FK → jobs (optional)
+created_at  DATETIME
+```
+
+---
 
 ## API Endpoints
 
-### Jobs (8 endpoints)
-- `POST /api/jobs` - Submit new job URL
-- `GET /api/jobs` - List all jobs (with status filter)
-- `GET /api/jobs/{id}` - Get job details
-- `DELETE /api/jobs/{id}` - Delete job
-- `POST /api/jobs/{id}/retry` - Retry failed job
-- `POST /api/jobs/{id}/company` - Submit company info for unknown site
-- `POST /api/jobs/{id}/process` - Manual processing trigger
+### Jobs (`/api/jobs`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/` | Submit new job URL |
+| GET | `/` | List jobs (optional `?status=` filter) |
+| GET | `/{id}` | Get job details |
+| DELETE | `/{id}` | Delete job |
+| POST | `/{id}/retry` | Retry failed job |
+| POST | `/{id}/company` | Submit company info for unknown site |
+| POST | `/{id}/process` | Trigger company extraction only |
+| POST | `/{id}/workflow` | Trigger full LinkedIn workflow |
+| POST | `/{id}/search-connections` | Manual connection search |
+| GET | `/{id}/contacts` | Get contacts for this job |
+| GET | `/{id}/pending-hebrew-names` | Get names needing translation |
+| POST | `/{id}/hebrew-names` | Submit Hebrew translations |
+| POST | `/abort` | Abort currently running workflow |
+| GET | `/current` | Get info about running workflow |
 
-### Templates (7 endpoints)
-- `POST /api/templates` - Create template
-- `GET /api/templates` - List templates
-- `GET /api/templates/{id}` - Get template
-- `PUT /api/templates/{id}` - Update template
-- `DELETE /api/templates/{id}` - Delete template
-- `POST /api/templates/{id}/preview` - Preview with sample data
-- `GET /api/templates/default/current` - Get default template
+### Templates (`/api/templates`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/` | Create template |
+| GET | `/` | List all templates |
+| GET | `/{id}` | Get template |
+| PUT | `/{id}` | Update template |
+| DELETE | `/{id}` | Delete template |
+| POST | `/{id}/preview` | Preview with sample data |
+| GET | `/default/current` | Get default template |
 
-### Selectors (6 endpoints)
-- `POST /api/selectors` - Create/learn selector
-- `GET /api/selectors` - List all selectors
-- `GET /api/selectors/{id}` - Get by ID
-- `GET /api/selectors/domain/{domain}` - Get by domain
-- `PUT /api/selectors/{id}` - Update selector
-- `DELETE /api/selectors/{id}` - Delete selector
+### Selectors (`/api/selectors`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/` | Create/learn selector |
+| GET | `/` | List all selectors |
+| GET | `/{id}` | Get by ID |
+| GET | `/domain/{domain}` | Get by domain |
+| PUT | `/{id}` | Update selector |
+| DELETE | `/{id}` | Delete selector |
+| POST | `/check` | Check if URL has known selector |
 
-### Logs (4 endpoints)
-- `GET /api/logs` - List with filters
-- `GET /api/logs/stats` - Get statistics
-- `GET /api/logs/recent` - Recent activity
-- `GET /api/logs/job/{id}` - Logs for specific job
+### Logs (`/api/logs`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | List logs (filters: action_type, job_id, skip, limit) |
+| GET | `/stats` | Get activity statistics |
+| GET | `/recent` | Get most recent logs |
+| GET | `/job/{id}` | Get logs for specific job |
 
-### Auth (3 endpoints)
-- `GET /api/auth/status` - Check LinkedIn login status
-- `POST /api/auth/login` - Trigger login flow (opens browser)
-- `POST /api/auth/logout` - Clear session
+### Auth (`/api/auth`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/status` | Check LinkedIn login status |
+| POST | `/login` | Login with email/password |
+| POST | `/login-browser` | Open browser for manual login |
+| POST | `/logout` | Clear session |
 
-## Environment Variables
-```
-DATABASE_URL=postgresql://user:pass@localhost:5432/jobiai
-LINKEDIN_EMAIL=user@example.com  # Optional, for reference only
-BROWSER_HEADLESS=false           # Keep false for safety
-```
-
-## Development Commands
-```bash
-# Start all services
-docker-compose up
-
-# Rebuild after code changes
-docker-compose up -d --build
-
-# Backend only
-cd backend && uvicorn app.main:app --reload
-
-# Frontend only
-cd frontend && npm run dev
-
-# Run migrations
-docker-compose exec backend alembic upgrade head
-
-# Run tests
-docker-compose exec backend pytest
-```
-
-## Important Notes
-- Never run bot in headless mode (easier detection)
-- Always respect LinkedIn's rate limits
-- Bot actions are logged for transparency
-- User must manually log in to LinkedIn on first run
-- **⚠️ Backend does NOT auto-reload** - Must manually restart after code changes
+### Hebrew Names (`/api/hebrew-names`)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/` | Add single translation |
+| POST | `/bulk` | Add multiple translations |
+| GET | `/` | List all translations |
+| GET | `/{name}` | Get translation for name |
+| POST | `/check-missing` | Check which names need translation |
+| DELETE | `/{id}` | Delete translation |
 
 ---
 
-## 🚧 Current Development Status (Dec 2025)
+## Workflow State Machine
 
-### Recently Completed
-- ✅ **Full end-to-end workflow working** - Play button triggers complete LinkedIn automation
-- ✅ Hebrew name translation feature for personalized messages
-- ✅ Database model for Hebrew name mappings (`hebrew_names` table)
-- ✅ API endpoints for name translation prompts
-- ✅ Workflow pauses at `NEEDS_HEBREW_NAMES` step when unknown names found
-- ✅ Frontend UI for handling Hebrew name translation prompts
-- ✅ Close all open message overlays when entering LinkedIn workflow
-- ✅ **Message history detection** - Skips contacts already messaged
-- ✅ **Multi-degree fallback** - If 1st degree all skipped, tries 2nd, then 3rd+
-- ✅ **Robust chat modal closing** - Multiple methods to close chat dialogs
-
-### Workflow Steps
 ```
-COMPANY_EXTRACTION → SEARCH_CONNECTIONS → MESSAGE_1ST_DEGREE → CONNECT_2ND/3RD_DEGREE → DONE
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           JOB SUBMISSION                                     │
+│  User pastes URL → Job created with status=PENDING                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       COMPANY_EXTRACTION                                     │
+│  Extract company name from URL using:                                        │
+│  1. Database selectors (learned patterns)                                    │
+│  2. Pre-configured platforms (Greenhouse, Lever, etc.)                       │
+│  3. User input if unknown                                                    │
+│                                                                              │
+│  → Success: status=COMPLETED, company_name set                               │
+│  → Unknown site: status=NEEDS_INPUT (wait for user)                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                     User clicks Play button
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       SEARCH_CONNECTIONS                                     │
+│  Search LinkedIn for people at the company                                   │
+│  - Uses search_company_all_degrees() which:                                  │
+│    1. Searches 1st degree connections                                        │
+│    2. If message needed, checks Hebrew name translation                      │
+│    3. Falls back to 2nd/3rd degree if no 1st available                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+                    ▼               ▼               ▼
+            Found 1st degree   Missing Hebrew   No connections
+                    │          names found           │
+                    │               │                │
+                    ▼               ▼                ▼
+┌──────────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ MESSAGE_CONNECTIONS  │  │ NEEDS_HEBREW_    │  │ SEND_REQUESTS    │
+│                      │  │ NAMES            │  │                  │
+│ Send personalized    │  │                  │  │ Send connection  │
+│ messages to 1st      │  │ status=NEEDS_    │  │ requests to      │
+│ degree connections   │  │ INPUT            │  │ 2nd/3rd degree   │
+│                      │  │ Pause workflow   │  │                  │
+│ Checks message       │  │ Display UI for   │  │ (Only to people  │
+│ history first        │  │ user to provide  │  │ with company in  │
+│ (skips if exists)    │  │ translations     │  │ headline)        │
+└──────────────────────┘  └──────────────────┘  └──────────────────┘
+           │                       │                    │
+           ▼                       │                    ▼
+┌──────────────────────┐           │           ┌──────────────────┐
+│ WAITING_FOR_REPLY    │           │           │ WAITING_FOR_     │
+│                      │◄──────────┘           │ ACCEPT           │
+│ status=COMPLETED     │  (User provides       │                  │
+│ Messages sent,       │   translations,       │ status=COMPLETED │
+│ waiting for reply    │   workflow resumes)   │ Requests sent,   │
+│                      │                       │ waiting for      │
+│ Blue "Check Replies" │                       │ accepts          │
+│ button available     │                       │                  │
+└──────────────────────┘                       └──────────────────┘
+           │                                            │
+           │  (User clicks Check Replies                │  (User clicks Play
+           │   or Play button)                          │   to re-search)
+           ▼                                            ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  REPLY CHECK / RE-SEARCH                                                      │
+│                                                                               │
+│  - Check Replies (forceSearch=false): Only checks inbox for replies           │
+│  - Play (forceSearch=true): Searches for NEW people to message                │
+│                                                                               │
+│  → Found reply: workflow_step=DONE, mission complete!                         │
+│  → No reply: Stay in WAITING state or find new people                         │
+│  → New 1st degree (from accepted requests): Message them                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DONE                                            │
+│  Someone replied to our message! Job complete.                               │
+│  Green checkmark badge displayed.                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Company Matching Behavior
-- For 2nd/3rd degree: Only connects to people with company name in their headline
-- Example: Searching "home" will only connect to people with "Home" (the company) in their title
-- This prevents sending requests to random people who just have the search term elsewhere
+### Workflow Steps Enum
+```python
+class WorkflowStep(str, Enum):
+    COMPANY_EXTRACTION = "company_extraction"
+    SEARCH_CONNECTIONS = "search_connections"
+    NEEDS_HEBREW_NAMES = "needs_hebrew_names"
+    MESSAGE_CONNECTIONS = "message_connections"
+    WAITING_FOR_REPLY = "waiting_for_reply"
+    SEARCH_LINKEDIN = "search_linkedin"
+    SEND_REQUESTS = "send_requests"
+    WAITING_FOR_ACCEPT = "waiting_for_accept"
+    DONE = "done"
+```
 
-### Development Notes
-- Backend runs on port 9000
-- Frontend runs on Vite dev server
-- Database: PostgreSQL with SQLAlchemy async
-- Migrations: Alembic (remember to run `alembic upgrade head` after new migrations)
+### Job Status Enum
+```python
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    NEEDS_INPUT = "needs_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ABORTED = "aborted"
+    DONE = "done"        # User marked as successfully done
+    REJECTED = "rejected"  # User marked as rejected/not interested
+```
+
+---
+
+## Key Services
+
+### WorkflowOrchestrator (`services/workflow_orchestrator.py`)
+Main workflow engine. Key methods:
+- `run_workflow(job_id, template_id, force_search)` - Orchestrates full workflow
+- Handles workflow state persistence and resumption
+- Catches `MissingHebrewNamesException` to pause for user input
+- Saves contacts to database after operations
+
+### LinkedInClient (`services/linkedin/client.py`)
+Playwright browser automation. Key features:
+- Singleton pattern (one browser instance)
+- Persistent context in `linkedin_data/browser_context/`
+- Anti-detection with playwright-stealth
+- Abort signal handling for user cancellation
+- `MissingHebrewNamesException` - Raised when Hebrew translation needed but missing
+- `WorkflowAbortedException` - Raised when user aborts workflow
+
+### HebrewNames Service (`services/hebrew_names.py`)
+Name translation. Key methods:
+- `translate_name_to_hebrew(name, db)` - Async translation
+- `translate_name_to_hebrew_sync(name)` - Sync version for message generator
+- `is_hebrew_text(text)` - Detect Hebrew in text
+- Built-in dictionary of 200+ Israeli names
+
+### JobProcessor (`services/job_processor.py`)
+Company extraction from URLs:
+- Checks database for learned patterns
+- Checks pre-configured platforms
+- Generates regex patterns for new sites
+
+---
+
+## Pre-configured Job Platforms
+
+URL pattern extraction works automatically for:
+- Greenhouse (`company.greenhouse.io`)
+- Lever (`jobs.lever.co/company`)
+- Workday (`company.wd5.myworkdayjobs.com`)
+- Ashby (`jobs.ashbyhq.com/company`)
+- SmartRecruiters
+- Breezy
+- BambooHR
+- Recruitee
+- ApplyToJob
+- iCIMS
+
+For unknown sites, the system learns the pattern from user input.
+
+---
+
+## Frontend Components
+
+### Jobs Page (`pages/Jobs.tsx`)
+Key features:
+- URL input with auto-submit on paste
+- Job list with status badges
+- Company input modal (for unknown sites)
+- Hebrew names input form (for translations)
+- Workflow action buttons:
+  - **Play** (green): Start workflow / Search new people (`forceSearch=true`)
+  - **Check Replies** (blue): Check for replies only (`forceSearch=false`)
+  - **Stop** (red): Abort running workflow
+  - **Retry**: Retry failed job
+  - **Delete**: Remove job
+- Contact viewer for each job
+- "Waiting for Reply/Accept" badges
+
+### Dashboard (`pages/Dashboard.tsx`)
+- Statistics cards (jobs, messages, connections, errors)
+- Recent activity feed (auto-refresh every 5 seconds)
+
+### Templates (`pages/Templates.tsx`)
+- Template list with edit/delete
+- Create new template
+- Preview with sample data
+- Set default template
+
+### Settings (`pages/Settings.tsx`)
+- LinkedIn login status
+- Login/logout buttons
+- Learned site selectors management
+
+---
+
+## Development Setup
+
+```bash
+# 1. Start PostgreSQL only
+docker-compose up -d db
+
+# 2. Backend (port 9000)
+cd backend
+python -m venv venv
+venv\Scripts\activate  # Windows
+pip install -r requirements.txt
+playwright install chromium
+alembic upgrade head
+uvicorn app.main:app --reload --port 9000
+
+# 3. Frontend (port 5173)
+cd frontend
+npm install
+npm run dev
+
+# 4. Open http://localhost:5173
+```
+
+**Note**: Backend does NOT auto-reload with `--reload` - restart after code changes.
+
+---
+
+## Environment Variables
+
+```env
+# Backend (.env)
+DATABASE_URL=postgresql://user:pass@localhost:5436/jobiai
+BROWSER_HEADLESS=false  # Always false (LinkedIn detects headless)
+FAST_MODE=true          # true=300ms delays, false=1000ms delays
+```
+
+---
+
+## Anti-Detection Strategy
+
+- `playwright-stealth` plugin for fingerprint evasion
+- Random delays between actions (300-2000ms)
+- Headed browser only (headless is detected)
+- Persistent browser profile (maintains cookies/session)
+- Human-like scrolling and clicking patterns
+- Respects rate limits (~100-150 messages/day, ~50-100 connections/week)
+
+---
+
+## Important Implementation Details
+
+### Message History Detection
+Before sending a message, the bot:
+1. Opens the chat window with the contact
+2. Checks if there's existing message history
+3. If history exists, closes chat and skips to next contact
+4. This prevents duplicate outreach
+
+### Hebrew Name Translation Flow
+1. When about to send message, checks if template contains Hebrew
+2. If Hebrew text detected, attempts to translate recipient's name
+3. If translation not found (not in dictionary or database):
+   - Raises `MissingHebrewNamesException`
+   - Workflow pauses at `NEEDS_HEBREW_NAMES` step
+   - Frontend shows translation input form
+   - User provides translation
+   - Workflow resumes with translated name
+
+### Multi-Degree Fallback
+1. First searches for 1st degree connections at company
+2. If found, sends personalized messages
+3. If all 1st degree already messaged (history detected), tries 2nd degree
+4. If no 2nd degree with "Connect" button available, tries 3rd+ degree
+5. Sends connection requests to 2nd/3rd+ degree people
+6. Only connects to people with company name in their headline (prevents random connections)
+
+### Two-Button Workflow Control
+- **Play button** (green, `forceSearch=true`): Searches for NEW people to message
+- **Check Replies button** (blue, `forceSearch=false`): Only checks inbox for replies
+- This gives users control over whether to expand outreach or just monitor existing
+
+### Reply Detection System
+The "Check Replies" feature opens LinkedIn messaging and checks if any contact has replied:
+
+1. **Panel Detection**: Before clicking the messaging button, checks if panel is already open using multiple selectors to avoid accidentally closing it
+2. **Conversation Search**: Finds conversations by contact name in the messaging overlay
+3. **Reply Detection**: Uses JavaScript to analyze messages in the conversation:
+   - **Method 1**: Check for 'outbound' CSS class (LinkedIn sometimes adds this)
+   - **Method 2**: Check sender name elements - if sender contains contact's name = inbound, if empty or "You" = outbound
+   - **Method 3**: Check for avatar/profile image - if avatar alt text contains their name = inbound
+4. **Result**: If ANY inbound message exists, marks as replied and sets `workflow_step=DONE`
+
+**UI Feedback**: When in `waiting_for_reply` or `waiting_for_accept` state, the badge shows "No reply (checked Xm ago)" using the `last_reply_check_at` timestamp.
+
+**Key Files**:
+- Reply detection: `client.py` → `_check_for_replies_sync()`
+- Timestamp update: `workflow_orchestrator.py` → sets `job.last_reply_check_at`
+- UI display: `Jobs.tsx` → `WorkflowBadge` component with `formatTimeAgo()` helper
+
+---
+
+## TODO: Pending Features
+
+### Priority 1: Rate Limiting
+- [ ] Track daily message count in database
+- [ ] Track weekly connection request count
+- [ ] Pause/warn when approaching limits
+- [ ] Detect LinkedIn rate limit responses
+
+### Priority 2: Contacts Management
+- [ ] Contacts list page with filtering
+- [ ] Manual retry for failed messages
+- [ ] Contact notes/tags
+
+### Priority 3: Testing
+- [ ] Integration tests with mocked LinkedIn
+- [ ] Reply checking end-to-end testing
+- [ ] Selector learning flow tests
+
+---
+
+## File Locations Quick Reference
+
+| Component | Path |
+|-----------|------|
+| Main API entry | `backend/app/main.py` |
+| Job endpoints | `backend/app/api/jobs.py` |
+| Workflow engine | `backend/app/services/workflow_orchestrator.py` |
+| LinkedIn client | `backend/app/services/linkedin/client.py` |
+| Hebrew names service | `backend/app/services/hebrew_names.py` |
+| Job model | `backend/app/models/job.py` |
+| Contact model | `backend/app/models/contact.py` |
+| Frontend API client | `frontend/src/api/client.ts` |
+| Jobs page | `frontend/src/pages/Jobs.tsx` |
+| Browser data | `backend/linkedin_data/browser_context/` |
+| Migrations | `backend/alembic/versions/` |

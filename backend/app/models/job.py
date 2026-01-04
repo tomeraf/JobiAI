@@ -13,6 +13,8 @@ class JobStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     ABORTED = "aborted"  # User aborted the workflow
+    DONE = "done"  # User marked as successfully done
+    REJECTED = "rejected"  # User marked as rejected/not interested
 
 
 class WorkflowStep(str, enum.Enum):
@@ -21,9 +23,11 @@ class WorkflowStep(str, enum.Enum):
     SEARCH_CONNECTIONS = "search_connections"  # Step 2: Search existing connections
     NEEDS_HEBREW_NAMES = "needs_hebrew_names"  # Step 2.5: Waiting for Hebrew name translations
     MESSAGE_CONNECTIONS = "message_connections"  # Step 3: Message found connections
+    WAITING_FOR_REPLY = "waiting_for_reply"  # Step 3.5: Sent messages, waiting for reply
     SEARCH_LINKEDIN = "search_linkedin"  # Step 4: Search LinkedIn for people
     SEND_REQUESTS = "send_requests"  # Step 5: Send connection requests
-    DONE = "done"  # Workflow complete
+    WAITING_FOR_ACCEPT = "waiting_for_accept"  # Step 5.5: Sent requests, waiting for accepts
+    DONE = "done"  # Workflow complete - got a reply!
 
 
 class Job(Base):
@@ -45,6 +49,7 @@ class Job(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     pending_hebrew_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # Names awaiting Hebrew translation
+    last_reply_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # When replies were last checked
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

@@ -69,7 +69,7 @@ class LinkedInSearch:
         """
         return await self.client.get_profile(public_id)
 
-    async def search_company_all_degrees(self, company: str, limit: int = 15, message_generator=None) -> dict:
+    async def search_company_all_degrees(self, company: str, limit: int = 15, message_generator=None, first_degree_only: bool = False) -> dict:
         """
         Search for people at a company - first 1st degree, then 2nd, then 3rd+ if needed.
         All in a single browser session for efficiency.
@@ -79,8 +79,9 @@ class LinkedInSearch:
             limit: Maximum results to return per degree level
             message_generator: Optional function(name, company) -> str to generate message text
                               for 1st degree connections
+            first_degree_only: If True, only search for 1st degree connections (don't fall back to 2nd/3rd)
 
         Returns:
             Dict with 'first_degree', 'second_degree', 'third_plus', and 'messages_sent' lists
         """
-        return await self.client.search_company_all_degrees(company, limit, message_generator)
+        return await self.client.search_company_all_degrees(company, limit, message_generator, first_degree_only)

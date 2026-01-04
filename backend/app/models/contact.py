@@ -1,15 +1,8 @@
 from datetime import datetime
-from sqlalchemy import String, Text, DateTime, Boolean, ForeignKey, Enum
+from sqlalchemy import String, Text, DateTime, Boolean, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-import enum
 
 from app.database import Base
-
-
-class Gender(str, enum.Enum):
-    MALE = "male"
-    FEMALE = "female"
-    UNKNOWN = "unknown"
 
 
 class Contact(Base):
@@ -20,17 +13,15 @@ class Contact(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     position: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    gender: Mapped[Gender] = mapped_column(
-        Enum(Gender, values_callable=lambda x: [e.value for e in x]),
-        default=Gender.UNKNOWN,
-        nullable=False
-    )
     is_connection: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     connection_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )
     message_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     message_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reply_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )  # When they replied to our message
 
     # Foreign key to job that triggered this contact
     job_id: Mapped[int | None] = mapped_column(

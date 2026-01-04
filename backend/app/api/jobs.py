@@ -7,6 +7,7 @@ from typing import Literal
 
 from app.database import get_db, AsyncSessionLocal
 from app.models.job import Job, JobStatus, WorkflowStep
+from app.models.contact import Contact
 from app.models.activity import ActivityLog, ActionType
 from app.services.job_processor import JobProcessor
 from app.services.workflow_orchestrator import WorkflowOrchestrator
@@ -70,6 +71,15 @@ async def create_job(
     db: AsyncSession = Depends(get_db),
 ):
     """Submit a new job URL for processing."""
+    # Check for duplicate URL
+    existing_result = await db.execute(select(Job).where(Job.url == job_data.url))
+    existing_job = existing_result.scalar_one_or_none()
+    if existing_job:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This URL has already been submitted (Job #{existing_job.id})"
+        )
+
     # Create job
     job = Job(url=job_data.url, status=JobStatus.PENDING)
     db.add(job)
@@ -199,6 +209,56 @@ async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
     return job
 
 
+class ContactResponse(BaseModel):
+    """Response for a contact."""
+    id: int
+    name: str
+    linkedin_url: str
+    company: str | None
+    position: str | None
+    message_sent_at: datetime | None
+    reply_received_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class JobContactsResponse(BaseModel):
+    """Response with contacts for a job."""
+    job_id: int
+    contacts: list[ContactResponse]
+    total: int
+
+
+@router.get("/{job_id}/contacts", response_model=JobContactsResponse)
+async def get_job_contacts(job_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Get contacts we messaged for a specific job.
+
+    Only returns contacts that have been messaged (message_sent_at is not null).
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get contacts that were messaged for this job
+    contacts_result = await db.execute(
+        select(Contact)
+        .where(Contact.job_id == job_id)
+        .where(Contact.message_sent_at.isnot(None))
+        .order_by(Contact.message_sent_at.desc())
+    )
+    contacts = contacts_result.scalars().all()
+
+    return JobContactsResponse(
+        job_id=job_id,
+        contacts=contacts,
+        total=len(contacts),
+    )
+
+
 @router.delete("/{job_id}")
 async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
     """Delete a job."""
@@ -218,33 +278,50 @@ async def retry_job(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """Retry a failed job."""
+    """
+    Retry a failed or aborted job from where it left off.
+
+    This will resume the workflow from the current workflow_step,
+    preserving progress. If the job failed during company extraction,
+    it will retry that. If it failed during the workflow, it will
+    resume from the step where it stopped.
+    """
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if job.status != JobStatus.FAILED:
-        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+    if job.status not in [JobStatus.FAILED, JobStatus.ABORTED]:
+        raise HTTPException(status_code=400, detail="Only failed or aborted jobs can be retried")
 
-    job.status = JobStatus.PENDING
+    # Clear error message
     job.error_message = None
-    job.processed_at = None
 
-    # Log retry
+    # Log retry with current step info
     activity = ActivityLog(
         action_type=ActionType.JOB_SUBMITTED,
-        description=f"Job retry requested",
-        details={"job_id": job_id},
+        description=f"Job retry requested from step: {job.workflow_step.value}",
+        details={"job_id": job_id, "workflow_step": job.workflow_step.value},
         job_id=job.id,
     )
     db.add(activity)
 
-    # Add background task to process job
-    background_tasks.add_task(process_job_task, job_id)
-
-    return {"message": "Job queued for retry"}
+    # Determine how to retry based on workflow_step
+    if job.workflow_step == WorkflowStep.COMPANY_EXTRACTION or not job.company_name:
+        # No company extracted yet - retry from company extraction
+        job.status = JobStatus.PENDING
+        job.processed_at = None
+        await db.commit()
+        background_tasks.add_task(process_job_task, job_id)
+        return {"message": "Job queued for retry (company extraction)"}
+    else:
+        # Company already extracted - resume workflow from current step
+        job.status = JobStatus.PROCESSING
+        await db.commit()
+        # Run workflow - it will resume from current workflow_step
+        background_tasks.add_task(run_workflow_task, job_id)
+        return {"message": f"Job resuming from step: {job.workflow_step.value}"}
 
 
 @router.post("/{job_id}/company", response_model=JobResponse)
@@ -329,6 +406,8 @@ async def trigger_process(
 class WorkflowTrigger(BaseModel):
     """Request body for triggering the full workflow."""
     template_id: int | None = None
+    force_search: bool = False  # Skip reply check and force a new search
+    first_degree_only: bool = False  # Only search 1st degree (for checking accepted requests)
 
 
 class WorkflowResponse(BaseModel):
@@ -343,14 +422,14 @@ class WorkflowResponse(BaseModel):
     error: str | None = None
 
 
-async def run_workflow_task(job_id: int, template_id: int | None = None):
+async def run_workflow_task(job_id: int, template_id: int | None = None, force_search: bool = False, first_degree_only: bool = False):
     """Background task to run the full workflow."""
-    logger.info(f"Starting workflow task for job {job_id}")
+    logger.info(f"Starting workflow task for job {job_id} (force_search={force_search}, first_degree_only={first_degree_only})")
     orchestrator = None
     async with AsyncSessionLocal() as db:
         try:
             orchestrator = WorkflowOrchestrator(db)
-            result = await orchestrator.run_workflow(job_id, template_id)
+            result = await orchestrator.run_workflow(job_id, template_id, force_search=force_search, first_degree_only=first_degree_only)
             logger.info(f"Workflow result for job {job_id}: {result}")
             await db.commit()
         except Exception as e:
@@ -406,9 +485,11 @@ async def trigger_workflow(
         )
 
     template_id = workflow_data.template_id if workflow_data else None
+    force_search = workflow_data.force_search if workflow_data else False
+    first_degree_only = workflow_data.first_degree_only if workflow_data else False
 
     # Run workflow in background
-    background_tasks.add_task(run_workflow_task, job_id, template_id)
+    background_tasks.add_task(run_workflow_task, job_id, template_id, force_search, first_degree_only)
 
     return WorkflowResponse(
         success=True,
@@ -576,13 +657,375 @@ async def submit_hebrew_names(
             detail=f"Missing translations for: {', '.join(missing)}"
         )
 
-    # All names provided - resume workflow
-    await db.commit()  # Save the Hebrew names first
+    # All names provided - update job state to show it's resuming
+    # This ensures the UI shows normal state (white row) before workflow continues
+    job.status = JobStatus.PROCESSING
+    job.pending_hebrew_names = None  # Clear pending names (translations are now saved)
+    # Keep workflow_step as NEEDS_HEBREW_NAMES - the orchestrator will update it when it resumes
+
+    await db.commit()  # Save the Hebrew names and updated job state
 
     # Run workflow in background (will resume from NEEDS_HEBREW_NAMES step)
     background_tasks.add_task(run_workflow_task, job_id)
 
     # Refresh job to return updated state
     await db.refresh(job)
+
+    return job
+
+
+class UpdateCompanyRequest(BaseModel):
+    """Request body for updating company name."""
+    company_name: str
+
+
+@router.put("/{job_id}/company", response_model=JobResponse)
+async def update_company_name(
+    job_id: int,
+    data: UpdateCompanyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Update the company name for a job.
+
+    Use this when the bot extracted the wrong company name
+    and you want to correct it manually.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot update a job that is currently processing")
+
+    old_name = job.company_name
+    job.company_name = data.company_name.strip()
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.COMPANY_EXTRACTED,
+        description=f"Company name manually changed from '{old_name}' to '{job.company_name}'",
+        details={"job_id": job_id, "old_name": old_name, "new_name": job.company_name},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Updated company name for job {job_id}: '{old_name}' -> '{job.company_name}'")
+
+    return job
+
+
+@router.post("/{job_id}/reset", response_model=JobResponse)
+async def reset_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reset a job to start the workflow from scratch.
+
+    This will:
+    1. Delete all contacts associated with this job
+    2. Reset workflow_step to COMPANY_EXTRACTION
+    3. Reset status to COMPLETED (ready to run workflow)
+    4. Keep the company_name (no need to re-extract)
+
+    Use this when you want to start fresh - search for new connections
+    and send messages again as if this job was just created.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot reset a job that is currently processing")
+
+    # Delete all contacts for this job
+    contacts_result = await db.execute(select(Contact).where(Contact.job_id == job_id))
+    contacts = contacts_result.scalars().all()
+    for contact in contacts:
+        await db.delete(contact)
+
+    # Reset job state
+    job.workflow_step = WorkflowStep.COMPANY_EXTRACTION
+    job.status = JobStatus.COMPLETED  # Ready to run workflow
+    job.error_message = None
+    job.pending_hebrew_names = None
+    job.last_reply_check_at = None
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.JOB_SUBMITTED,
+        description=f"Job reset - starting fresh for {job.company_name}",
+        details={"job_id": job_id, "contacts_deleted": len(contacts)},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Reset job {job_id}: deleted {len(contacts)} contacts, workflow reset to start")
+
+    return job
+
+
+@router.post("/{job_id}/find-more", response_model=JobResponse)
+async def find_more_replies(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Continue searching for more people after someone replied.
+
+    This will:
+    1. Delete the contact(s) who replied
+    2. Check if there are other contacts we messaged who haven't replied
+    3. If yes: go to WAITING_FOR_REPLY (wait for those to reply)
+    4. If no: go to SEARCH_CONNECTIONS (search for new people)
+
+    Use this when someone replied but you want to find more people
+    (e.g., the conversation didn't go well).
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot modify a job that is currently processing")
+
+    if job.workflow_step != WorkflowStep.DONE:
+        raise HTTPException(
+            status_code=400,
+            detail="Job is not in DONE state - use this after someone replied"
+        )
+
+    # Find and delete contacts who replied
+    replied_contacts_result = await db.execute(
+        select(Contact)
+        .where(Contact.job_id == job_id)
+        .where(Contact.reply_received_at.isnot(None))
+    )
+    replied_contacts = replied_contacts_result.scalars().all()
+
+    deleted_names = []
+    for contact in replied_contacts:
+        deleted_names.append(contact.name)
+        await db.delete(contact)
+
+    # Check if there are other contacts we messaged who haven't replied yet
+    other_messaged_result = await db.execute(
+        select(Contact)
+        .where(Contact.job_id == job_id)
+        .where(Contact.message_sent_at.isnot(None))
+        .where(Contact.reply_received_at.is_(None))
+    )
+    other_messaged_contacts = other_messaged_result.scalars().all()
+
+    if other_messaged_contacts:
+        # There are other people we messaged - wait for their replies
+        job.workflow_step = WorkflowStep.WAITING_FOR_REPLY
+        next_step_msg = f"waiting for {len(other_messaged_contacts)} other contacts to reply"
+    else:
+        # No other contacts - search for new people
+        job.workflow_step = WorkflowStep.SEARCH_CONNECTIONS
+        next_step_msg = "searching for new contacts"
+
+    job.status = JobStatus.COMPLETED  # Ready to run workflow
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.CONNECTION_SEARCH,
+        description=f"Removed {', '.join(deleted_names)} - {next_step_msg}",
+        details={"job_id": job_id, "removed_contacts": deleted_names, "remaining_messaged": len(other_messaged_contacts)},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Find more for job {job_id}: removed {len(deleted_names)} replied contacts, {next_step_msg}")
+
+    # Always trigger workflow - if there are other contacts, it will check for replies
+    # If no other contacts, it will search for new people
+    background_tasks.add_task(run_workflow_task, job_id, None, True)  # force_search=True
+
+    return job
+
+
+@router.post("/{job_id}/contacts/{contact_id}/mark-replied")
+async def mark_contact_replied(job_id: int, contact_id: int, db: AsyncSession = Depends(get_db)):
+    """Mark a contact as replied, which completes the job workflow."""
+    from datetime import datetime
+
+    # Get the job
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get the contact
+    result = await db.execute(
+        select(Contact)
+        .where(Contact.id == contact_id)
+        .where(Contact.job_id == job_id)
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    # Mark the contact as replied
+    contact.reply_received_at = datetime.utcnow()
+
+    # Complete the job workflow
+    job.workflow_step = WorkflowStep.DONE
+    job.status = JobStatus.COMPLETED
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.MESSAGE_SENT,
+        description=f"Manually marked {contact.name} as replied - job complete!",
+        details={"job_id": job_id, "contact_id": contact_id, "contact_name": contact.name},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+    await db.refresh(contact)
+
+    logger.info(f"Manually marked contact {contact.name} as replied for job {job_id} - workflow complete")
+
+    return {"success": True, "job": job, "contact": contact}
+
+
+@router.delete("/{job_id}/contacts/{contact_id}")
+async def delete_contact(job_id: int, contact_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove a contact from a job's contact list."""
+    # Get the job
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get the contact
+    result = await db.execute(
+        select(Contact)
+        .where(Contact.id == contact_id)
+        .where(Contact.job_id == job_id)
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    contact_name = contact.name
+
+    # Delete the contact
+    await db.delete(contact)
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.CONNECTION_SEARCH,
+        description=f"Removed {contact_name} from contact list",
+        details={"job_id": job_id, "contact_id": contact_id, "contact_name": contact_name},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+
+    logger.info(f"Removed contact {contact_name} from job {job_id}")
+
+    return {"success": True, "message": f"Contact {contact_name} removed"}
+
+
+@router.post("/{job_id}/mark-done", response_model=JobResponse)
+async def mark_job_done(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark a job as successfully done (user got the job or positive outcome).
+
+    This will:
+    1. Set status to DONE
+    2. Set workflow_step to DONE
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot mark a processing job as done")
+
+    job.status = JobStatus.DONE
+    job.workflow_step = WorkflowStep.DONE
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.JOB_SUBMITTED,
+        description=f"Job marked as done - success!",
+        details={"job_id": job_id, "company": job.company_name},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Job {job_id} marked as done by user")
+
+    return job
+
+
+@router.post("/{job_id}/mark-rejected", response_model=JobResponse)
+async def mark_job_rejected(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark a job as rejected (user not interested or negative outcome).
+
+    This will:
+    1. Set status to REJECTED
+    2. Set workflow_step to DONE
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot mark a processing job as rejected")
+
+    job.status = JobStatus.REJECTED
+    job.workflow_step = WorkflowStep.DONE
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.JOB_SUBMITTED,
+        description=f"Job marked as rejected",
+        details={"job_id": job_id, "company": job.company_name},
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Job {job_id} marked as rejected by user")
 
     return job

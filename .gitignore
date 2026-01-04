@@ -7,42 +7,79 @@ __pycache__/
 venv/
 .venv/
 env/
+*.egg-info/
+*.egg
+
+# Environment files (contain secrets)
 .env
+backend/.env
 
 # Node
 node_modules/
 dist/
+dist-ssr/
 .next/
+*.local
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Browser data (sensitive)
+# Browser data (contains LinkedIn session - SENSITIVE)
 backend/browser_data/*
 !backend/browser_data/.gitkeep
 backend/linkedin_data/
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # Testing
 .coverage
 htmlcov/
 .pytest_cache/
+.tox/
+.nox/
 
 # Temp files
 temp_*.png
 screenshot*.png
+*.tmp
+*.temp
+
+# Build artifacts
+build/
+*.db
 
 # Accidental files
 nul
 
-# Claude Code local settings
+# Claude Code / AI assistant settings
 .claude/
+.claude.json
+.mcp.json
+.cursor/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Homework files (not part of project)
+*.pdf
+homework_*.py
+least_squares_*.py

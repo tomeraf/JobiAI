@@ -14,19 +14,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job, JobStatus, WorkflowStep
-from app.models.contact import Contact, Gender
+from app.models.contact import Contact
 from app.models.template import Template
 from app.models.activity import ActivityLog, ActionType
 from app.services.linkedin.search import LinkedInSearch
 from app.services.linkedin.messaging import LinkedInMessaging
 from app.services.linkedin.connections import LinkedInConnections
-from app.services.linkedin.client import LinkedInClient, WorkflowAbortedException
-from app.services.gender_detector import detect_gender
+from app.services.linkedin.client import LinkedInClient, WorkflowAbortedException, MissingHebrewNamesException
 from app.services.hebrew_names import (
     translate_name_to_hebrew,
     translate_name_to_hebrew_sync,
     is_hebrew_text,
-    get_missing_hebrew_names,
 )
 from app.utils.logger import get_logger
 
@@ -49,13 +47,15 @@ class WorkflowOrchestrator:
         self.connections = LinkedInConnections()
         self.client = LinkedInClient.get_instance()
 
-    async def run_workflow(self, job_id: int, template_id: int | None = None) -> dict:
+    async def run_workflow(self, job_id: int, template_id: int | None = None, force_search: bool = False, first_degree_only: bool = False) -> dict:
         """
         Run the full workflow for a job.
 
         Args:
             job_id: The job to process
             template_id: Optional template ID (uses default if not provided)
+            force_search: If True, skip reply checking and go straight to searching
+            first_degree_only: If True, only search for 1st degree (for checking accepted connection requests)
 
         Returns:
             Dict with workflow results
@@ -74,6 +74,10 @@ class WorkflowOrchestrator:
         if not template:
             return {"success": False, "error": "No message template found"}
 
+        # Store previous state to restore on abort
+        previous_status = job.status
+        previous_error = job.error_message
+
         try:
             # Initialize services
             logger.info(f"Initializing workflow services for job {job_id}")
@@ -83,27 +87,22 @@ class WorkflowOrchestrator:
             self.client.clear_abort()
             self.client.set_current_job(job_id)
 
-            # Update status
+            # Update status and clear any previous error
             job.status = JobStatus.PROCESSING
+            job.error_message = None  # Clear previous error when starting new workflow
             logger.info(f"Job {job_id} status set to PROCESSING, starting workflow")
 
             # Run workflow steps based on current step
-            workflow_result = await self._run_from_step(job, template)
+            workflow_result = await self._run_from_step(job, template, force_search=force_search, first_degree_only=first_degree_only)
             logger.info(f"Workflow completed for job {job_id}: {workflow_result}")
 
             return workflow_result
 
         except WorkflowAbortedException:
-            logger.info(f"Workflow aborted by user for job {job_id}")
-            job.status = JobStatus.ABORTED
-            job.error_message = "Workflow aborted by user"
-
-            await self._log_activity(
-                ActionType.ERROR,
-                "Workflow aborted by user",
-                {"job_id": job_id},
-                job_id=job.id,
-            )
+            logger.info(f"Workflow aborted by user for job {job_id}, restoring previous state")
+            # Restore previous state instead of setting to ABORTED
+            job.status = previous_status
+            job.error_message = previous_error
 
             return {"success": False, "error": "Workflow aborted by user", "aborted": True}
 
@@ -125,7 +124,7 @@ class WorkflowOrchestrator:
             # Clear current job
             self.client.set_current_job(None)
 
-    async def _run_from_step(self, job: Job, template: Template) -> dict:
+    async def _run_from_step(self, job: Job, template: Template, force_search: bool = False, first_degree_only: bool = False) -> dict:
         """Run workflow from the current step."""
         results = {
             "success": True,
@@ -142,11 +141,134 @@ class WorkflowOrchestrator:
         # Check for abort before starting
         self.client.check_abort()
 
-        # Resume from NEEDS_HEBREW_NAMES step - re-run the search workflow
-        # Hebrew name translation is now handled inline in the message generator
+        # Guard: Don't run workflow for already completed jobs
+        if job.workflow_step == WorkflowStep.DONE:
+            logger.warning(f"Job {job.id} is already at DONE step, nothing to do")
+            job.status = JobStatus.COMPLETED
+            return results
+
+        # Resume from NEEDS_HEBREW_NAMES step - now that user provided translations,
+        # re-run the search WITH message generator to send messages
         if job.workflow_step == WorkflowStep.NEEDS_HEBREW_NAMES:
-            logger.info(f"Resuming workflow for job {job.id} - re-running search with Hebrew names")
+            logger.info(f"Resuming workflow for job {job.id} - sending messages with Hebrew names")
             job.pending_hebrew_names = None
+            job.workflow_step = WorkflowStep.MESSAGE_CONNECTIONS
+            await self.db.flush()
+
+            # Get template for message generation
+            template_has_hebrew = is_hebrew_text(template.content or "")
+
+            # Create message generator with Hebrew translation
+            def create_message(name: str, company_name: str) -> str:
+                """Generate message text using the template with Hebrew names."""
+                first_name = name.split()[0] if name else ""
+                if template_has_hebrew:
+                    translated = translate_name_to_hebrew_sync(first_name)
+                    if translated:
+                        first_name = translated
+                return template.format_message(name=first_name, company=company_name)
+
+            # Re-run search with message generator to send messages
+            search_results = await self.search.search_company_all_degrees(
+                company, limit=15, message_generator=create_message
+            )
+
+            messages_sent = search_results.get("messages_sent", [])
+            second_degree = search_results.get("second_degree", [])
+            third_plus = search_results.get("third_plus", [])
+
+            if messages_sent:
+                logger.info(f"Sent {len(messages_sent)} messages after Hebrew name input")
+
+                # Save messaged contacts
+                saved_contacts = await self._save_contacts(
+                    job, messages_sent, is_connection=True, already_messaged=True
+                )
+
+                for contact in saved_contacts:
+                    await self._log_activity(
+                        ActionType.MESSAGE_SENT,
+                        f"Message sent to {contact.name}",
+                        {"contact_id": contact.id, "name": contact.name},
+                        job_id=job.id,
+                    )
+
+                job.workflow_step = WorkflowStep.WAITING_FOR_REPLY
+                job.status = JobStatus.COMPLETED
+                results["messages_sent"] = len(messages_sent)
+                results["steps_completed"].append("message_connections")
+                return results
+
+            elif second_degree or third_plus:
+                # No 1st degree could be messaged, but we got 2nd/3rd degree
+                people = second_degree or third_plus
+                degree_type = "2nd" if second_degree else "3rd+"
+
+                logger.info(f"No 1st degree messages sent, connected with {len(people)} {degree_type} degree")
+
+                for person in people:
+                    await self._log_activity(
+                        ActionType.CONNECTION_REQUEST_SENT,
+                        f"Connection request sent to {person.get('name', 'Unknown')}",
+                        {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
+                        job_id=job.id,
+                    )
+
+                job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                job.status = JobStatus.COMPLETED
+                results["connection_requests_sent"] = len(people)
+                results["steps_completed"].append("send_requests")
+                return results
+
+            else:
+                # Nothing worked
+                job.workflow_step = WorkflowStep.DONE
+                job.status = JobStatus.FAILED
+                job.error_message = "Could not send any messages or connection requests"
+                results["success"] = False
+                results["error"] = job.error_message
+                return results
+
+        # Resume from WAITING_FOR_REPLY - check if anyone replied (unless force_search)
+        if job.workflow_step == WorkflowStep.WAITING_FOR_REPLY:
+            if force_search:
+                # User wants to search for more candidates, skip reply check
+                logger.info(f"Force search requested for job {job.id} - skipping reply check")
+                job.workflow_step = WorkflowStep.SEARCH_CONNECTIONS
+                await self.db.flush()
+                # Fall through to run the normal search flow below
+            else:
+                logger.info(f"Checking for replies for job {job.id}")
+                reply_result = await self._check_for_replies(job)
+                # Always update the last reply check timestamp
+                job.last_reply_check_at = datetime.utcnow()
+                if reply_result.get("reply_received"):
+                    # Got a reply! Job is done!
+                    job.workflow_step = WorkflowStep.DONE
+                    job.status = JobStatus.COMPLETED
+                    job.processed_at = datetime.utcnow()
+                    results["success"] = True
+                    results["steps_completed"].append("reply_received")
+                    return results
+                else:
+                    # No reply yet - stay in waiting state
+                    job.status = JobStatus.COMPLETED  # Not failed, just waiting
+                    results["success"] = True
+                    results["steps_completed"].append("checked_replies_none_yet")
+                    return results
+
+        # Resume from WAITING_FOR_ACCEPT - search for new 1st degree connections
+        if job.workflow_step == WorkflowStep.WAITING_FOR_ACCEPT:
+            logger.info(f"Checking for new 1st degree connections for job {job.id}")
+            # Re-run search to find if any connection requests were accepted
+            job.workflow_step = WorkflowStep.SEARCH_CONNECTIONS
+            await self.db.flush()
+            # Fall through to run the normal search flow below
+
+        # Resume from intermediate steps that failed - restart search from scratch
+        # These steps can fail due to network issues, rate limits, etc.
+        if job.workflow_step in [WorkflowStep.MESSAGE_CONNECTIONS, WorkflowStep.SEARCH_LINKEDIN, WorkflowStep.SEND_REQUESTS]:
+            logger.info(f"Resuming from failed step {job.workflow_step.value} - restarting search for job {job.id}")
             job.workflow_step = WorkflowStep.SEARCH_CONNECTIONS
             await self.db.flush()
             # Fall through to run the normal search flow below
@@ -162,30 +284,50 @@ class WorkflowOrchestrator:
             # Check if template contains Hebrew text (to decide if we need Hebrew names)
             template_has_hebrew = is_hebrew_text(template.content or "")
 
-            # Create a message generator function that uses the template
-            # If template has Hebrew, we'll pass None to skip sending from search page
-            # (because we need to check for missing Hebrew names first)
+            # Create message generator with Hebrew translation
+            # This will raise MissingHebrewNamesException if translation is needed but missing
             def create_message(name: str, company_name: str) -> str:
-                """Generate message text using the template."""
+                """Generate message text using the template with Hebrew names."""
                 first_name = name.split()[0] if name else ""
-
-                # If template is in Hebrew, translate the name to Hebrew (dict only - sync)
                 if template_has_hebrew:
                     translated = translate_name_to_hebrew_sync(first_name)
                     if translated:
                         first_name = translated
-                    logger.debug(f"Using Hebrew name: {first_name}")
+                    else:
+                        # Hebrew translation needed but not available - raise exception
+                        raise MissingHebrewNamesException(
+                            missing_names=[first_name],
+                            first_degree_found=[]
+                        )
+                return template.format_message(name=first_name, company=company_name)
 
-                return template.format_message(
-                    name=first_name,
-                    company=company_name,
+            try:
+                # Run search with message generator - will raise exception if Hebrew name missing
+                search_results = await self.search.search_company_all_degrees(
+                    company, limit=15, message_generator=create_message, first_degree_only=first_degree_only
+                )
+            except MissingHebrewNamesException as e:
+                # Hebrew name translation missing - pause workflow for user input
+                logger.info(f"Missing Hebrew translation for: {e.missing_names}")
+
+                job.workflow_step = WorkflowStep.NEEDS_HEBREW_NAMES
+                job.status = JobStatus.NEEDS_INPUT
+                job.pending_hebrew_names = e.missing_names
+
+                await self._log_activity(
+                    ActionType.COMPANY_INPUT_NEEDED,
+                    f"Hebrew name translation needed for: {e.missing_names[0]}",
+                    {"missing_names": e.missing_names, "company": company},
+                    job_id=job.id,
                 )
 
-            # Always use the message generator - it handles Hebrew translation internally
-            # The create_message function uses translate_name_to_hebrew_sync which works synchronously
-            message_gen = create_message
+                await self.db.flush()
 
-            search_results = await self.search.search_company_all_degrees(company, limit=15, message_generator=message_gen)
+                results["steps_completed"].append("search_connections")
+                results["needs_hebrew_names"] = e.missing_names
+                results["success"] = True  # Not a failure, just paused
+
+                return results
 
             first_degree = search_results.get("first_degree", [])
             second_degree = search_results.get("second_degree", [])
@@ -218,10 +360,7 @@ class WorkflowOrchestrator:
                         job_id=job.id,
                     )
 
-                # Note: Hebrew name translation is now handled inline in the message generator
-                # using translate_name_to_hebrew_sync, so we don't pause for missing names
-
-                # Check if messages were already sent from the search page
+                # Check if messages were sent from the search page
                 messages_sent_from_search = search_results.get("messages_sent", [])
                 if messages_sent_from_search:
                     # Messages were already sent directly from search page
@@ -229,19 +368,24 @@ class WorkflowOrchestrator:
                     results["messages_sent"] = len(messages_sent_from_search)
                     results["steps_completed"].append("message_connections")
 
+                    # Save the messaged contacts to the database
+                    saved_messaged_contacts = await self._save_contacts(
+                        job, messages_sent_from_search, is_connection=True, already_messaged=True
+                    )
+                    logger.info(f"Saved {len(saved_messaged_contacts)} messaged contacts to database")
+
                     # Log each message sent
-                    for person in messages_sent_from_search:
+                    for contact in saved_messaged_contacts:
                         await self._log_activity(
                             ActionType.MESSAGE_SENT,
-                            f"Message sent to {person.get('name', 'Unknown')}",
-                            {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
+                            f"Message sent to {contact.name}",
+                            {"contact_id": contact.id, "name": contact.name, "linkedin_url": contact.linkedin_url},
                             job_id=job.id,
                         )
 
-                    # Workflow complete
-                    job.workflow_step = WorkflowStep.DONE
-                    job.status = JobStatus.COMPLETED
-                    job.processed_at = datetime.utcnow()
+                    # Now waiting for a reply
+                    job.workflow_step = WorkflowStep.WAITING_FOR_REPLY
+                    job.status = JobStatus.COMPLETED  # Completed this phase, but waiting
 
                 elif second_degree:
                     # All 1st degree were skipped (existing history), but we connected with 2nd degree
@@ -255,25 +399,24 @@ class WorkflowOrchestrator:
                         job_id=job.id,
                     )
 
-                    # Save 2nd degree contacts (they already have connection_request_sent=True)
-                    saved_2nd_contacts = await self._save_contacts(job, second_degree, is_connection=False, already_requested=True)
+                    # Don't save 2nd degree contacts - they'll become 1st degree when they accept
+                    # and we'll save them when we message them
                     results["steps_completed"].append("search_linkedin")
                     results["connection_requests_sent"] = len(second_degree)
                     results["steps_completed"].append("send_requests")
 
-                    # Log each connection request sent
-                    for contact in saved_2nd_contacts:
+                    # Log connection requests sent (without saving contacts)
+                    for person in second_degree:
                         await self._log_activity(
                             ActionType.CONNECTION_REQUEST_SENT,
-                            f"Connection request sent to {contact.name}",
-                            {"contact_id": contact.id, "name": contact.name},
+                            f"Connection request sent to {person.get('name', 'Unknown')}",
+                            {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
                             job_id=job.id,
                         )
 
-                    # Workflow complete
-                    job.workflow_step = WorkflowStep.DONE
-                    job.status = JobStatus.COMPLETED
-                    job.processed_at = datetime.utcnow()
+                    # Now waiting for connection accepts
+                    job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                    job.status = JobStatus.COMPLETED  # Completed this phase, but waiting
 
                 elif third_plus:
                     # All 1st degree were skipped, no 2nd degree, but we connected with 3rd+
@@ -287,25 +430,24 @@ class WorkflowOrchestrator:
                         job_id=job.id,
                     )
 
-                    # Save 3rd+ degree contacts
-                    saved_3rd_contacts = await self._save_contacts(job, third_plus, is_connection=False, already_requested=True)
+                    # Don't save 3rd+ degree contacts - they'll become 1st degree when they accept
+                    # and we'll save them when we message them
                     results["steps_completed"].append("search_linkedin")
                     results["connection_requests_sent"] = len(third_plus)
                     results["steps_completed"].append("send_requests")
 
-                    # Log each connection request sent
-                    for contact in saved_3rd_contacts:
+                    # Log connection requests sent (without saving contacts)
+                    for person in third_plus:
                         await self._log_activity(
                             ActionType.CONNECTION_REQUEST_SENT,
-                            f"Connection request sent to {contact.name}",
-                            {"contact_id": contact.id, "name": contact.name},
+                            f"Connection request sent to {person.get('name', 'Unknown')}",
+                            {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
                             job_id=job.id,
                         )
 
-                    # Workflow complete
-                    job.workflow_step = WorkflowStep.DONE
-                    job.status = JobStatus.COMPLETED
-                    job.processed_at = datetime.utcnow()
+                    # Now waiting for connection accepts
+                    job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                    job.status = JobStatus.COMPLETED  # Completed this phase, but waiting
 
                 else:
                     # All 1st degree skipped and no 2nd/3rd degree found either
@@ -341,25 +483,24 @@ class WorkflowOrchestrator:
                     job_id=job.id,
                 )
 
-                # Save 2nd degree contacts (they already have connection_request_sent=True)
-                saved_contacts = await self._save_contacts(job, second_degree, is_connection=False, already_requested=True)
+                # Don't save 2nd degree contacts - they'll become 1st degree when they accept
+                # and we'll save them when we message them
                 results["steps_completed"].append("search_linkedin")
                 results["connection_requests_sent"] = len(second_degree)
                 results["steps_completed"].append("send_requests")
 
-                # Log each connection request sent
-                for contact in saved_contacts:
+                # Log connection requests sent (without saving contacts)
+                for person in second_degree:
                     await self._log_activity(
                         ActionType.CONNECTION_REQUEST_SENT,
-                        f"Connection request sent to {contact.name}",
-                        {"contact_id": contact.id, "name": contact.name},
+                        f"Connection request sent to {person.get('name', 'Unknown')}",
+                        {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
                         job_id=job.id,
                     )
 
-                # Workflow complete
-                job.workflow_step = WorkflowStep.DONE
-                job.status = JobStatus.COMPLETED
-                job.processed_at = datetime.utcnow()
+                # Now waiting for connection accepts
+                job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                job.status = JobStatus.COMPLETED  # Completed this phase, but waiting
 
             elif third_plus:
                 # No 1st or 2nd degree found, but we have 3rd+ degree results
@@ -374,48 +515,74 @@ class WorkflowOrchestrator:
                     job_id=job.id,
                 )
 
-                # Save 3rd+ degree contacts (they already have connection_request_sent=True)
-                saved_contacts = await self._save_contacts(job, third_plus, is_connection=False, already_requested=True)
+                # Don't save 3rd+ degree contacts - they'll become 1st degree when they accept
+                # and we'll save them when we message them
                 results["steps_completed"].append("search_linkedin")
                 results["connection_requests_sent"] = len(third_plus)
                 results["steps_completed"].append("send_requests")
 
-                # Log each connection request sent
-                for contact in saved_contacts:
+                # Log connection requests sent (without saving contacts)
+                for person in third_plus:
                     await self._log_activity(
                         ActionType.CONNECTION_REQUEST_SENT,
-                        f"Connection request sent to {contact.name}",
-                        {"contact_id": contact.id, "name": contact.name},
+                        f"Connection request sent to {person.get('name', 'Unknown')}",
+                        {"name": person.get("name"), "linkedin_url": person.get("linkedin_url")},
                         job_id=job.id,
                     )
 
-                # Workflow complete
-                job.workflow_step = WorkflowStep.DONE
-                job.status = JobStatus.COMPLETED
-                job.processed_at = datetime.utcnow()
+                # Now waiting for connection accepts
+                job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                job.status = JobStatus.COMPLETED  # Completed this phase, but waiting
 
             else:
-                # No people found at all - mark as failed with error message
+                # No people found at all
                 results["steps_completed"].append("search_connections")
-                error_msg = f"Could not find any people at '{company}' on LinkedIn"
-                logger.warning(error_msg)
 
-                await self._log_activity(
-                    ActionType.ERROR,
-                    error_msg,
-                    {"company": company},
-                    job_id=job.id,
-                )
+                if first_degree_only:
+                    # We were only checking for accepted connection requests (1st degree only)
+                    # No new 1st degree found - stay in WAITING_FOR_ACCEPT state
+                    logger.info(f"Check accepts: No new 1st degree connections found at {company} yet")
 
-                job.workflow_step = WorkflowStep.DONE
-                job.status = JobStatus.FAILED
-                job.error_message = error_msg
-                job.processed_at = datetime.utcnow()
+                    await self._log_activity(
+                        ActionType.CONNECTION_SEARCH,
+                        f"Checked for accepted connections at {company} - none yet",
+                        {"company": company, "first_degree_only": True},
+                        job_id=job.id,
+                    )
 
-                results["success"] = False
-                results["error"] = error_msg
+                    # Stay in WAITING_FOR_ACCEPT - connection requests still pending
+                    job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+                    job.status = JobStatus.COMPLETED
+                    job.last_reply_check_at = datetime.utcnow()  # Update check timestamp
+
+                    results["success"] = True
+                    results["steps_completed"].append("checked_accepts_none_yet")
+                else:
+                    # Normal search - no people found, mark as failed
+                    error_msg = f"Could not find any people at '{company}' on LinkedIn"
+                    logger.warning(error_msg)
+
+                    await self._log_activity(
+                        ActionType.ERROR,
+                        error_msg,
+                        {"company": company},
+                        job_id=job.id,
+                    )
+
+                    job.workflow_step = WorkflowStep.DONE
+                    job.status = JobStatus.FAILED
+                    job.error_message = error_msg
+                    job.processed_at = datetime.utcnow()
+
+                    results["success"] = False
+                    results["error"] = error_msg
 
         await self.db.flush()
+
+        # Log warning if no steps were completed (should not happen normally)
+        if not results["steps_completed"]:
+            logger.warning(f"Job {job.id} completed workflow with no steps executed. Workflow step was: {job.workflow_step.value}")
+
         return results
 
     async def _get_template(self, template_id: int | None) -> Template | None:
@@ -444,7 +611,7 @@ class WorkflowOrchestrator:
         job: Job,
         people: list[dict],
         is_connection: bool,
-        already_requested: bool = False
+        already_messaged: bool = False
     ) -> list[Contact]:
         """Save found people as contacts in database.
 
@@ -452,7 +619,7 @@ class WorkflowOrchestrator:
             job: The job these contacts are associated with
             people: List of people dicts from LinkedIn search
             is_connection: Whether these are existing connections (1st degree)
-            already_requested: Whether connection requests were already sent (from search page)
+            already_messaged: Whether messages were already sent (from search page)
         """
         saved_contacts = []
 
@@ -471,15 +638,12 @@ class WorkflowOrchestrator:
                 # Update job association if needed
                 if not existing.job_id:
                     existing.job_id = job.id
-                # Update connection_requested_at if request was sent from search page
-                if already_requested and not existing.connection_requested_at:
-                    existing.connection_requested_at = datetime.utcnow()
+                # Update message_sent_at if message was sent from search page
+                if already_messaged and not existing.message_sent_at:
+                    existing.message_sent_at = datetime.utcnow()
                 saved_contacts.append(existing)
             else:
-                # Detect gender
                 name = person.get("name", "")
-                gender_str = detect_gender(name)
-                gender = Gender(gender_str) if gender_str in ["male", "female"] else Gender.UNKNOWN
 
                 # Create new contact
                 contact = Contact(
@@ -487,11 +651,10 @@ class WorkflowOrchestrator:
                     name=name,
                     company=job.company_name,
                     position=person.get("headline") or person.get("occupation"),
-                    gender=gender,
                     is_connection=is_connection,
                     job_id=job.id,
-                    # Set connection_requested_at if request was already sent from search page
-                    connection_requested_at=datetime.utcnow() if already_requested else None,
+                    # Set message_sent_at if message was already sent from search page
+                    message_sent_at=datetime.utcnow() if already_messaged else None,
                 )
                 self.db.add(contact)
                 await self.db.flush()
@@ -601,6 +764,62 @@ class WorkflowOrchestrator:
                 result["failed"] += 1
 
         return result
+
+    async def _check_for_replies(self, job: Job) -> dict:
+        """
+        Check if any contacts we messaged have replied.
+
+        Returns:
+            Dict with reply_received=True if someone replied
+        """
+        # Get contacts we messaged for this job
+        result = await self.db.execute(
+            select(Contact).where(
+                Contact.job_id == job.id,
+                Contact.message_sent_at.isnot(None),
+                Contact.reply_received_at.is_(None),  # Not already marked as replied
+            )
+        )
+        contacts_to_check = result.scalars().all()
+
+        if not contacts_to_check:
+            logger.info(f"No contacts to check for replies for job {job.id}")
+            return {"reply_received": False}
+
+        # Convert to dicts for the LinkedIn client
+        contacts_data = [
+            {
+                "name": c.name,
+                "linkedin_url": c.linkedin_url,
+                "public_id": c.linkedin_url.rstrip('/').split('/')[-1] if c.linkedin_url else "",
+            }
+            for c in contacts_to_check
+        ]
+
+        logger.info(f"Checking {len(contacts_data)} contacts for replies")
+
+        # Check for replies using LinkedIn client
+        replied = await self.client.check_for_replies(contacts_data, job.company_name)
+
+        if replied:
+            # Mark the contacts that replied
+            for replied_contact in replied:
+                for contact in contacts_to_check:
+                    if contact.name == replied_contact.get("name"):
+                        contact.reply_received_at = datetime.utcnow()
+                        logger.info(f"Marked reply received from {contact.name}")
+
+                        await self._log_activity(
+                            ActionType.MESSAGE_SENT,  # Or create a new action type for replies
+                            f"Received reply from {contact.name}!",
+                            {"contact_id": contact.id, "name": contact.name},
+                            job_id=job.id,
+                        )
+                        break
+
+            return {"reply_received": True, "replied_contacts": replied}
+
+        return {"reply_received": False}
 
     async def _log_activity(
         self,

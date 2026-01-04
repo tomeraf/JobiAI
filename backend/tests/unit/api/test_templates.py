@@ -18,9 +18,7 @@ class TestCreateTemplate:
             "/api/templates",
             json={
                 "name": "Test Template",
-                "content_male": "Hi {name} at {company}!",
-                "content_female": "Hi {name} at {company}!",
-                "content_neutral": "Hello {name} at {company}!",
+                "content": "Hi {name} at {company}!",
                 "is_default": False
             }
         )
@@ -38,9 +36,7 @@ class TestCreateTemplate:
             "/api/templates",
             json={
                 "name": "Default Template",
-                "content_male": "Male",
-                "content_female": "Female",
-                "content_neutral": "Neutral",
+                "content": "Hello {name}!",
                 "is_default": True
             }
         )
@@ -56,7 +52,7 @@ class TestCreateTemplate:
             "/api/templates",
             json={
                 "name": "Incomplete"
-                # Missing content fields
+                # Missing content field
             }
         )
 
@@ -69,16 +65,14 @@ class TestCreateTemplate:
             "/api/templates",
             json={
                 "name": "Hebrew Template",
-                "content_male": "היי {name}, ראיתי שאתה עובד ב-{company}!",
-                "content_female": "היי {name}, ראיתי שאת עובדת ב-{company}!",
-                "content_neutral": "שלום {name}!",
+                "content": "היי {שם}, ראיתי שאתה עובד ב-{חברה}!",
                 "is_default": False
             }
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert "שאתה עובד" in data["content_male"]
+        assert "שאתה עובד" in data["content"]
 
 
 class TestListTemplates:
@@ -147,13 +141,13 @@ class TestUpdateTemplate:
         response = await client.put(
             f"/api/templates/{sample_template.id}",
             json={
-                "content_male": "New male content: {name} at {company}"
+                "content": "New content: {name} at {company}"
             }
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert "New male content" in data["content_male"]
+        assert "New content" in data["content"]
 
     @pytest.mark.asyncio
     async def test_update_template_set_as_default(
@@ -166,9 +160,7 @@ class TestUpdateTemplate:
         # Create another template
         other = Template(
             name="Other",
-            content_male="M",
-            content_female="F",
-            content_neutral="N",
+            content="Other content",
             is_default=False
         )
         db_session.add(other)
@@ -218,12 +210,11 @@ class TestPreviewTemplate:
     """Tests for POST /api/templates/{template_id}/preview endpoint."""
 
     @pytest.mark.asyncio
-    async def test_preview_template_male(self, client: AsyncClient, sample_template: Template):
-        """Test previewing template for male."""
+    async def test_preview_template(self, client: AsyncClient, sample_template: Template):
+        """Test previewing template."""
         response = await client.post(
             f"/api/templates/{sample_template.id}/preview",
             json={
-                "gender": "male",
                 "name": "דוד",
                 "company": "גוגל"
             }
@@ -236,28 +227,11 @@ class TestPreviewTemplate:
         assert "גוגל" in data["preview"]
 
     @pytest.mark.asyncio
-    async def test_preview_template_female(self, client: AsyncClient, sample_template: Template):
-        """Test previewing template for female."""
-        response = await client.post(
-            f"/api/templates/{sample_template.id}/preview",
-            json={
-                "gender": "female",
-                "name": "שרה",
-                "company": "מיקרוסופט"
-            }
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert "שרה" in data["preview"]
-
-    @pytest.mark.asyncio
     async def test_preview_template_not_found(self, client: AsyncClient):
         """Test previewing non-existent template."""
         response = await client.post(
             "/api/templates/99999/preview",
             json={
-                "gender": "male",
                 "name": "Test",
                 "company": "Test"
             }
@@ -285,9 +259,7 @@ class TestGetDefaultTemplate:
         # Create a non-default template
         template = Template(
             name="Not Default",
-            content_male="M",
-            content_female="F",
-            content_neutral="N",
+            content="Content",
             is_default=False
         )
         db_session.add(template)

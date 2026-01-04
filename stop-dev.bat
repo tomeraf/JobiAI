@@ -19,10 +19,9 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING
 )
 echo [OK] Frontend stopped
 
-:: Stop Docker containers
+:: Stop Docker containers (but keep them for faster restart)
 echo [3/3] Stopping Docker containers...
-cd /d %~dp0
-docker-compose down >nul 2>&1
+docker stop jobiai-db >nul 2>&1
 echo [OK] Docker containers stopped
 
 echo.

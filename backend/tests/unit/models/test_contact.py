@@ -6,23 +6,12 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models.contact import Contact, Gender
+from app.models.contact import Contact
 from app.models.job import Job, JobStatus
 
 
 class TestContactModel:
     """Tests for the Contact model."""
-
-    def test_gender_enum_values(self):
-        """Test that Gender enum has expected values."""
-        assert Gender.MALE.value == "male"
-        assert Gender.FEMALE.value == "female"
-        assert Gender.UNKNOWN.value == "unknown"
-
-    def test_gender_is_string_enum(self):
-        """Test that Gender values work as strings."""
-        assert Gender.MALE == "male"
-        assert Gender.FEMALE == "female"
 
     @pytest.mark.asyncio
     async def test_create_contact(self, db_session: AsyncSession):
@@ -38,7 +27,6 @@ class TestContactModel:
         assert contact.id is not None
         assert contact.linkedin_url == "https://linkedin.com/in/john-doe"
         assert contact.name == "John Doe"
-        assert contact.gender == Gender.UNKNOWN
         assert contact.is_connection is False
         assert contact.created_at is not None
 
@@ -50,7 +38,6 @@ class TestContactModel:
             name="Jane Smith",
             company="Google",
             position="Senior Engineer",
-            gender=Gender.FEMALE,
             is_connection=True
         )
         db_session.add(contact)
@@ -60,21 +47,7 @@ class TestContactModel:
         assert contact.name == "Jane Smith"
         assert contact.company == "Google"
         assert contact.position == "Senior Engineer"
-        assert contact.gender == Gender.FEMALE
         assert contact.is_connection is True
-
-    @pytest.mark.asyncio
-    async def test_contact_default_gender(self, db_session: AsyncSession):
-        """Test that contact defaults to UNKNOWN gender."""
-        contact = Contact(
-            linkedin_url="https://linkedin.com/in/test",
-            name="Test User"
-        )
-        db_session.add(contact)
-        await db_session.flush()
-        await db_session.refresh(contact)
-
-        assert contact.gender == Gender.UNKNOWN
 
     @pytest.mark.asyncio
     async def test_contact_with_job_relationship(self, db_session: AsyncSession, sample_job: Job):
@@ -159,26 +132,6 @@ class TestContactModel:
         assert "TestCo" in repr_str
 
     @pytest.mark.asyncio
-    async def test_query_contacts_by_gender(self, db_session: AsyncSession):
-        """Test querying contacts by gender."""
-        contacts = [
-            Contact(linkedin_url="https://linkedin.com/in/m1", name="Male 1", gender=Gender.MALE),
-            Contact(linkedin_url="https://linkedin.com/in/f1", name="Female 1", gender=Gender.FEMALE),
-            Contact(linkedin_url="https://linkedin.com/in/m2", name="Male 2", gender=Gender.MALE),
-        ]
-        db_session.add_all(contacts)
-        await db_session.flush()
-
-        result = await db_session.execute(
-            select(Contact).where(Contact.gender == Gender.MALE)
-        )
-        male_contacts = result.scalars().all()
-
-        assert len(male_contacts) == 2
-        for contact in male_contacts:
-            assert contact.gender == Gender.MALE
-
-    @pytest.mark.asyncio
     async def test_query_connections_only(self, db_session: AsyncSession):
         """Test querying only connected contacts."""
         contacts = [
@@ -195,24 +148,3 @@ class TestContactModel:
         connections = result.scalars().all()
 
         assert len(connections) == 2
-
-
-class TestGenderEnum:
-    """Tests for Gender enum."""
-
-    def test_all_gender_values_exist(self):
-        """Verify all expected gender values exist."""
-        expected = {"male", "female", "unknown"}
-        actual = {g.value for g in Gender}
-        assert actual == expected
-
-    def test_gender_from_string(self):
-        """Test creating gender from string value."""
-        assert Gender("male") == Gender.MALE
-        assert Gender("female") == Gender.FEMALE
-        assert Gender("unknown") == Gender.UNKNOWN
-
-    def test_invalid_gender_raises(self):
-        """Test that invalid gender raises ValueError."""
-        with pytest.raises(ValueError):
-            Gender("other")

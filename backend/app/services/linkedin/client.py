@@ -41,6 +41,14 @@ except ImportError:
     HAS_PLAYWRIGHT = False
     logger.warning("playwright not installed - browser features disabled")
 
+# Try to import playwright-stealth
+try:
+    from playwright_stealth import stealth_sync
+    HAS_STEALTH = True
+except ImportError:
+    HAS_STEALTH = False
+    logger.warning("playwright-stealth not installed - stealth features disabled")
+
 
 def _run_sync_playwright(func, *args, **kwargs):
     """
@@ -75,6 +83,55 @@ async def _run_playwright_async(func, *args, **kwargs):
 class WorkflowAbortedException(Exception):
     """Raised when workflow is aborted by user."""
     pass
+
+
+class MissingHebrewNamesException(Exception):
+    """Raised when Hebrew name translations are needed but not available.
+
+    This exception is raised during message sending when we encounter names
+    that need Hebrew translations. The workflow should pause and ask the user
+    for translations.
+    """
+    def __init__(self, missing_names: list[str], first_degree_found: list[dict] = None):
+        self.missing_names = missing_names
+        self.first_degree_found = first_degree_found or []
+        super().__init__(f"Missing Hebrew translations for: {', '.join(missing_names)}")
+
+
+import random
+
+def _apply_stealth(page):
+    """Apply stealth patches to a page to avoid bot detection."""
+    if HAS_STEALTH:
+        try:
+            stealth_sync(page)
+            logger.debug("Stealth patches applied to page")
+        except Exception as e:
+            logger.warning(f"Failed to apply stealth patches: {e}")
+    else:
+        logger.warning("Stealth not available - browser may be detected as automated")
+
+
+def _human_delay(min_ms: int = 500, max_ms: int = 2000):
+    """Add a random human-like delay."""
+    delay = random.randint(min_ms, max_ms) / 1000.0
+    import time
+    time.sleep(delay)
+
+
+def _human_delay_short():
+    """Short delay for between actions (~300ms)."""
+    _human_delay(200, 400)
+
+
+def _human_delay_medium():
+    """Medium delay for page loads (~300ms)."""
+    _human_delay(250, 450)
+
+
+def _human_delay_long():
+    """Long delay for major actions like messaging (~300ms)."""
+    _human_delay(300, 500)
 
 
 class LinkedInClient:
@@ -342,6 +399,8 @@ class LinkedInClient:
                 )
 
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
                 page.bring_to_front()  # Bring browser window to foreground
 
                 # Force window to foreground on Windows
@@ -528,6 +587,8 @@ class LinkedInClient:
                 )
 
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Try to access LinkedIn feed
                 page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=30000)
@@ -606,7 +667,7 @@ class LinkedInClient:
 
         return await _run_playwright_async(self._search_2nd_degree_sync, keywords, limit)
 
-    async def search_company_all_degrees(self, company: str, limit: int = 15, message_generator=None) -> dict:
+    async def search_company_all_degrees(self, company: str, limit: int = 15, message_generator=None, first_degree_only: bool = False) -> dict:
         """
         Search for people at a company - first 1st degree, then 2nd degree, then 3rd+ if needed.
         All in a single browser session for efficiency.
@@ -616,6 +677,7 @@ class LinkedInClient:
             limit: Maximum results per degree level
             message_generator: Optional function(name, company) -> str to generate message text
                               for 1st degree connections
+            first_degree_only: If True, only search for 1st degree connections (skip 2nd/3rd degree fallback)
 
         Returns:
             dict with 'first_degree', 'second_degree', 'third_plus', and 'messages_sent' lists
@@ -624,14 +686,16 @@ class LinkedInClient:
             logger.error("Not logged in")
             return {"first_degree": [], "second_degree": [], "third_plus": []}
 
-        return await _run_playwright_async(self._search_company_all_degrees_sync, company, limit, message_generator)
+        return await _run_playwright_async(self._search_company_all_degrees_sync, company, limit, message_generator, first_degree_only)
 
-    def _search_company_all_degrees_sync(self, company: str, limit: int, message_generator=None) -> dict:
+    def _search_company_all_degrees_sync(self, company: str, limit: int, message_generator=None, first_degree_only: bool = False) -> dict:
         """
         Synchronous combined search for 1st, 2nd, and 3rd+ degree connections at a company.
         Keeps browser open between searches.
         For 2nd/3rd+ degree: clicks Connect button directly on search results page.
         For 1st degree: sends messages using the provided message_generator function.
+
+        If first_degree_only=True, only searches for 1st degree and doesn't fall back to 2nd/3rd.
         """
         if not HAS_PLAYWRIGHT:
             logger.error("Playwright not installed!")
@@ -641,6 +705,7 @@ class LinkedInClient:
         logger.info(f"Starting combined search for connections at: {company}")
 
         with sync_playwright() as p:
+            context = None
             try:
                 logger.info(f"Running in {'FAST' if FAST_MODE else 'SAFE'} mode (delays: {DELAY_MS}ms)")
 
@@ -651,6 +716,8 @@ class LinkedInClient:
                     args=["--window-size=1300,750", "--window-position=100,100"],  # Override maximized state
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Check for abort before starting
                 self.check_abort()
@@ -669,8 +736,7 @@ class LinkedInClient:
                 search_input = self._find_search_input(page)
                 if not search_input:
                     logger.error("Could not find search bar!")
-                    context.close()
-                    return result
+                    return result  # finally block will close browser
 
                 search_input.click()
                 page.wait_for_timeout(DELAY_MS // 2)
@@ -687,8 +753,7 @@ class LinkedInClient:
                 logger.info("Step 3: Clicking on People tab...")
                 if not self._click_people_tab(page):
                     logger.error("Could not find People tab!")
-                    context.close()
-                    return result
+                    return result  # finally block will close browser
 
                 # Check for abort
                 self.check_abort()
@@ -708,7 +773,7 @@ class LinkedInClient:
                 messages_sent_count = 0
                 if first_degree and message_generator:
                     logger.info(f"Sending messages to {len(first_degree)} 1st degree connections from search page...")
-                    messaged_people = self._send_messages_on_search_page(page, company, message_generator=message_generator, num_pages=1)
+                    messaged_people = self._send_messages_on_search_page(page, company, message_generator=message_generator, num_pages=1, first_degree_only=first_degree_only)
                     result["messages_sent"] = messaged_people
                     messages_sent_count = len(messaged_people)
                     logger.info(f"Sent {messages_sent_count} messages from search page")
@@ -717,9 +782,19 @@ class LinkedInClient:
 
                 # Step 6: If no 1st degree found OR all 1st degree were skipped (existing history), switch to 2nd degree
                 # This ensures we continue the flow instead of failing when all contacts have been previously messaged
+                # UNLESS first_degree_only is True - in that case, we only search for 1st degree
                 should_try_2nd_degree = not first_degree or (first_degree and message_generator and messages_sent_count == 0)
 
-                if should_try_2nd_degree:
+                if first_degree_only:
+                    # Only searching for 1st degree connections (e.g., checking for accepted requests)
+                    if not first_degree:
+                        logger.info("First degree only mode: No 1st degree connections found at this company")
+                    elif messages_sent_count == 0:
+                        logger.info(f"First degree only mode: {len(first_degree)} 1st degree found but all skipped (existing history)")
+                    else:
+                        logger.info(f"First degree only mode: Sent {messages_sent_count} messages to 1st degree connections")
+                    # Don't fall back to 2nd/3rd degree
+                elif should_try_2nd_degree:
                     # Check for abort before 2nd degree
                     self.check_abort()
 
@@ -729,40 +804,54 @@ class LinkedInClient:
                         logger.info("No 1st degree found, switching to 2nd degree filter...")
                     self._apply_connection_filter(page, "2nd")
 
-                    # Send connection requests directly on search page (2 pages)
-                    connected_people = self._send_connection_requests_on_search_page(page, company, num_pages=2)
+                    # Send connection requests directly on search page (max 10 requests)
+                    connected_people = self._send_connection_requests_on_search_page(page, company, max_requests=10)
                     result["second_degree"] = connected_people
                     result["connection_requests_sent"] = connected_people
                     logger.info(f"Sent {len(connected_people)} connection requests to 2nd degree people")
 
-                    # Step 6: If no 2nd degree connected, try 3rd+ degree
-                    if not connected_people:
+                    # Step 6: If we haven't reached 10 requests yet, try 3rd+ degree
+                    if len(connected_people) < 10:
                         # Check for abort before 3rd+ degree
                         self.check_abort()
 
-                        logger.info("No 2nd degree found with Connect button, switching to 3rd+ degree filter...")
+                        remaining_requests = 10 - len(connected_people)
+                        logger.info(f"Only {len(connected_people)} 2nd degree requests sent, need {remaining_requests} more - switching to 3rd+ degree...")
                         self._apply_connection_filter(page, "3rd+")
 
-                        # Send connection requests directly on search page (2 pages)
-                        connected_people_3rd = self._send_connection_requests_on_search_page(page, company, num_pages=2)
+                        # Send remaining connection requests from 3rd+ degree
+                        connected_people_3rd = self._send_connection_requests_on_search_page(page, company, max_requests=remaining_requests)
                         result["third_plus"] = connected_people_3rd
-                        result["connection_requests_sent"] = connected_people_3rd
-                        logger.info(f"Sent {len(connected_people_3rd)} connection requests to 3rd+ degree people")
+                        # Combine both lists for total
+                        all_connected = connected_people + connected_people_3rd
+                        result["connection_requests_sent"] = all_connected
+                        logger.info(f"Sent {len(connected_people_3rd)} connection requests to 3rd+ degree people (total: {len(all_connected)})")
 
-                context.close()
+                # Workflow complete
+                logger.info("Workflow complete")
                 return result
 
             except WorkflowAbortedException:
-                logger.info("Workflow aborted by user - closing browser")
-                try:
-                    context.close()
-                except:
-                    pass
+                logger.info("Workflow aborted by user")
                 raise  # Re-raise to propagate abort
+
+            except MissingHebrewNamesException:
+                logger.info("Missing Hebrew names - propagating to workflow orchestrator")
+                raise  # Re-raise to let orchestrator handle the pause
 
             except Exception as e:
                 logger.error(f"Combined search failed: {e}", exc_info=True)
                 return result
+
+            finally:
+                # ALWAYS close the browser, no matter what
+                if context:
+                    try:
+                        logger.info("Closing browser...")
+                        context.close()
+                        logger.info("Browser closed successfully")
+                    except Exception as close_error:
+                        logger.warning(f"Error closing browser: {close_error}")
 
     def _close_all_message_overlays(self, page):
         """
@@ -1056,12 +1145,14 @@ class LinkedInClient:
                     viewport={"width": 1280, "height": 720},
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Step 1: Go to LinkedIn feed page
                 logger.info("Step 1: Going to LinkedIn feed page...")
                 page.goto("https://www.linkedin.com/feed/", timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2000)
+                _human_delay_medium()
 
                 # Step 2: Find and click the search bar, then type company name
                 logger.info(f"Step 2: Searching for '{company}' in search bar...")
@@ -1259,41 +1350,49 @@ class LinkedInClient:
 
         return people
 
-    def _send_connection_requests_on_search_page(self, page, company: str, num_pages: int = 2) -> list[dict]:
+    def _send_connection_requests_on_search_page(self, page, company: str, max_requests: int = 10) -> list[dict]:
         """
         Send connection requests directly from search results page.
         Only clicks "Connect" buttons - skips people with Message/Follow buttons.
-        Processes multiple pages of results.
+        Stops after sending max_requests connection requests.
 
         Args:
             page: Playwright page object
             company: Company name to match
-            num_pages: Number of pages to process (default 2)
+            max_requests: Maximum number of connection requests to send (default 10)
 
         Returns list of people who were successfully sent connection requests.
         """
         connected_people = []
         company_lower = company.lower()
+        page_num = 0
+        max_pages = 10  # Safety limit to prevent infinite loops
 
-        for page_num in range(1, num_pages + 1):
+        while len(connected_people) < max_requests and page_num < max_pages:
+            page_num += 1
             # Check for abort at start of each page
             self.check_abort()
 
-            logger.info(f"Processing page {page_num} of {num_pages}")
+            logger.info(f"Processing page {page_num} (sent {len(connected_people)}/{max_requests} requests)")
 
             # Wait for results to load (with abort check)
             self._wait_with_abort_check(page, DELAY_MS)
 
-            # Process current page
-            page_results = self._process_search_results_page(page, company_lower, connected_people)
+            # Process current page with remaining request limit
+            remaining = max_requests - len(connected_people)
+            page_results = self._process_search_results_page(page, company_lower, connected_people, max_to_send=remaining)
             connected_people.extend(page_results)
-            logger.info(f"Page {page_num}: sent {len(page_results)} connection requests (total: {len(connected_people)})")
+            logger.info(f"Page {page_num}: sent {len(page_results)} connection requests (total: {len(connected_people)}/{max_requests})")
 
-            # Go to next page if not on last page
-            if page_num < num_pages:
-                if not self._go_to_next_search_page(page):
-                    logger.info("No more pages available")
-                    break
+            # Stop if we've reached our target
+            if len(connected_people) >= max_requests:
+                logger.info(f"Reached target of {max_requests} connection requests")
+                break
+
+            # Go to next page
+            if not self._go_to_next_search_page(page):
+                logger.info("No more pages available")
+                break
 
         logger.info(f"Sent {len(connected_people)} total connection requests from {page_num} page(s)")
         return connected_people
@@ -1301,13 +1400,24 @@ class LinkedInClient:
     def _go_to_next_search_page(self, page) -> bool:
         """Navigate to the next search results page. Returns True if successful."""
         try:
-            # Look for "Next" button
-            next_btn = page.query_selector("button[aria-label='Next']")
-            if not next_btn:
-                next_btn = page.query_selector("button:has-text('Next')")
-            if not next_btn:
-                # Try pagination link
-                next_btn = page.query_selector("a[aria-label='Next']")
+            # Look for "Next" button with retry (pagination may take time to load)
+            next_btn = None
+            next_btn_selectors = [
+                "button[aria-label='Next']",
+                "button:has-text('Next')",
+                "a[aria-label='Next']",
+            ]
+
+            # Try a few times with short delays (pagination might still be loading)
+            for attempt in range(3):
+                for selector in next_btn_selectors:
+                    next_btn = page.query_selector(selector)
+                    if next_btn:
+                        break
+                if next_btn:
+                    break
+                # Wait a bit before retrying
+                page.wait_for_timeout(500)
 
             if next_btn and next_btn.is_enabled():
                 logger.info("Clicking Next button to go to next page")
@@ -1315,7 +1425,7 @@ class LinkedInClient:
                 page.wait_for_timeout(DELAY_MS * 2)  # Wait for page to load
                 return True
             else:
-                logger.info("Next button not found or disabled")
+                logger.info("Next button not found or disabled after retries")
                 return False
         except WorkflowAbortedException:
             raise  # Re-raise abort exception immediately
@@ -1323,8 +1433,15 @@ class LinkedInClient:
             logger.error(f"Error navigating to next page: {e}")
             return False
 
-    def _process_search_results_page(self, page, company_lower: str, already_connected: list) -> list[dict]:
-        """Process all results on the current search page."""
+    def _process_search_results_page(self, page, company_lower: str, already_connected: list, max_to_send: int = None) -> list[dict]:
+        """Process all results on the current search page.
+
+        Args:
+            page: Playwright page object
+            company_lower: Lowercase company name to match
+            already_connected: List of people already processed
+            max_to_send: Maximum number of requests to send on this page (None = unlimited)
+        """
         page_connected = []
 
         # Find all search result items
@@ -1350,6 +1467,11 @@ class LinkedInClient:
         already_connected_urls = {p.get("linkedin_url") for p in already_connected}
 
         for result in results:
+            # Check if we've reached our limit
+            if max_to_send is not None and len(page_connected) >= max_to_send:
+                logger.info(f"Reached max_to_send limit ({max_to_send}) on this page")
+                break
+
             # Check for abort before processing each result
             self.check_abort()
 
@@ -1411,12 +1533,12 @@ class LinkedInClient:
                     logger.debug(f"Skipping {name} - already processed")
                     continue
 
-                # Look for Connect button in this result item with retry
-                connect_btn_selectors = [
-                    "button:has-text('Connect')",
-                    "button[aria-label*='connect']",
-                ]
-                connect_btn = self._retry_find_in_element(page, result, connect_btn_selectors, f"find Connect button for {name}")
+                # Look for Connect button in this result item (no retry - it's either there or not)
+                connect_btn = None
+                for selector in ["button:has-text('Connect')", "button[aria-label*='connect']"]:
+                    connect_btn = result.query_selector(selector)
+                    if connect_btn:
+                        break
 
                 if not connect_btn:
                     # No Connect button - person has Message, Follow, or other button
@@ -1479,7 +1601,7 @@ class LinkedInClient:
         logger.info(f"Sent {len(page_connected)} connection requests on this page")
         return page_connected
 
-    def _send_messages_on_search_page(self, page, company: str, message_generator=None, num_pages: int = 1) -> list[dict]:
+    def _send_messages_on_search_page(self, page, company: str, message_generator=None, num_pages: int = 1, first_degree_only: bool = False) -> list[dict]:
         """
         Send messages to 1st degree connections directly from search results page.
         Clicks Message button on each person's card, types message in modal, and sends.
@@ -1490,6 +1612,7 @@ class LinkedInClient:
             message_generator: Optional function(name, company) -> str to generate message text.
                               If None, uses a default message.
             num_pages: Number of pages to process (default 1)
+            first_degree_only: If True, stop after sending the first successful message
 
         Returns list of people who were successfully sent messages.
         """
@@ -1506,9 +1629,14 @@ class LinkedInClient:
             self._wait_with_abort_check(page, DELAY_MS)
 
             # Process current page
-            page_results = self._process_message_results_page(page, company_lower, already_messaged=messaged_people, message_generator=message_generator)
+            page_results = self._process_message_results_page(page, company_lower, already_messaged=messaged_people, message_generator=message_generator, first_degree_only=first_degree_only)
             messaged_people.extend(page_results)
             logger.info(f"Page {page_num}: sent {len(page_results)} messages (total: {len(messaged_people)})")
+
+            # If first_degree_only and we sent a message, stop (only message one person)
+            if first_degree_only and len(messaged_people) > 0:
+                logger.info("First degree only mode: Stopping after first successful message")
+                break
 
             # Go to next page if not on last page
             if page_num < num_pages:
@@ -1519,7 +1647,7 @@ class LinkedInClient:
         logger.info(f"Sent {len(messaged_people)} total messages from {page_num} page(s)")
         return messaged_people
 
-    def _process_message_results_page(self, page, company_lower: str, already_messaged: list, message_generator=None) -> list[dict]:
+    def _process_message_results_page(self, page, company_lower: str, already_messaged: list, message_generator=None, first_degree_only: bool = False) -> list[dict]:
         """Process all results on the current search page to send messages."""
         page_messaged = []
 
@@ -1623,6 +1751,17 @@ class LinkedInClient:
                 message_btn.click()
                 page.wait_for_timeout(DELAY_MS * 2)  # Wait for modal to open
 
+                # Verify the chat modal actually opened
+                modal_opened = page.evaluate("""
+                    () => {
+                        return !!(document.querySelector('[role="dialog"]') ||
+                                  document.querySelector('.msg-overlay-conversation-bubble'));
+                    }
+                """)
+                if not modal_opened:
+                    logger.warning(f"Chat modal didn't open for {name}, skipping")
+                    continue
+
                 # Check if there's existing message history in the chat
                 # If we've messaged this person before or they messaged us, skip them
                 has_existing_history = False
@@ -1634,31 +1773,57 @@ class LinkedInClient:
                     message_count = page.evaluate("""
                         () => {
                             // Find the messaging dialog - it's a DIV with role="dialog", NOT <dialog> HTML element
-                            // The accessibility tree shows "dialog" but actual DOM is div[role="dialog"]
                             const dialog = document.querySelector('[role="dialog"]') || document.querySelector('.msg-overlay-conversation-bubble');
                             if (!dialog) {
                                 console.log('No dialog found');
                                 return -1;  // Return -1 to indicate dialog not found
                             }
 
-                            // Find the message list within the dialog (it's a <ul> element)
+                            // Method 1: Look for msg-s-message-list__event elements
+                            // This is LinkedIn's specific class for actual message events (not reactions/spacers)
+                            // Class contains whitespace/newlines so we use attribute selector
+                            const messageEvents = dialog.querySelectorAll('li[class*="msg-s-message-list__event"]');
+                            if (messageEvents.length > 0) {
+                                console.log('Found ' + messageEvents.length + ' message events via msg-s-message-list__event');
+                                return messageEvents.length;
+                            }
+
+                            // Method 2: Look for the message list container and check list items
                             const messageList = dialog.querySelector('ul');
                             if (!messageList) {
                                 console.log('No message list found in dialog');
                                 return -2;  // Return -2 to indicate list not found
                             }
 
-                            // Count list items that contain actual message content (paragraphs with text)
-                            // Empty listitems are just spacers
+                            // Count list items that have actual message content
                             const listItems = messageList.querySelectorAll('li');
                             let messageCount = 0;
                             listItems.forEach(li => {
-                                // Check if this list item has a paragraph with actual text content
+                                const className = li.className || '';
+
+                                // Skip spacers, loaders, and non-message items
+                                if (className.includes('loader') ||
+                                    className.includes('top-of-list') ||
+                                    className.includes('typing-indicator') ||
+                                    className === '' ||
+                                    className.trim() === '') {
+                                    return;
+                                }
+
+                                // Check if this is a message event (has 'event' in class name)
+                                if (className.includes('event')) {
+                                    messageCount++;
+                                    return;
+                                }
+
+                                // Check for paragraph with substantial text (actual message content)
                                 const paragraph = li.querySelector('p');
                                 if (paragraph && paragraph.textContent.trim().length > 5) {
                                     messageCount++;
+                                    return;
                                 }
                             });
+                            console.log('Found ' + messageCount + ' messages via list item analysis');
                             return messageCount;
                         }
                     """)
@@ -1757,7 +1922,29 @@ class LinkedInClient:
                     # Generate message using provided generator or default
                     first_name = name.split()[0] if name else "there"
                     if message_generator:
-                        message_text = message_generator(name, company_lower)
+                        try:
+                            message_text = message_generator(name, company_lower)
+                        except MissingHebrewNamesException as e:
+                            # Hebrew name translation missing - close chat and record
+                            logger.info(f"Missing Hebrew translation for {name}, closing chat and recording")
+                            # Close the chat modal
+                            page.evaluate("""
+                                () => {
+                                    const closeButtons = document.querySelectorAll(
+                                        '.msg-overlay-conversation-bubble button[aria-label*="Close"], ' +
+                                        '.msg-overlay-bubble-header button[aria-label*="Close"], ' +
+                                        '[role="dialog"] button[aria-label*="Close"]'
+                                    );
+                                    for (const btn of closeButtons) {
+                                        try { btn.click(); break; } catch (e) {}
+                                    }
+                                }
+                            """)
+                            page.wait_for_timeout(300)
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(300)
+                            # Re-raise to be caught by outer handler
+                            raise
                     else:
                         message_text = f"Hi {first_name}, I noticed you work at {company_lower}. I'd love to connect about an opportunity there!"
 
@@ -1787,8 +1974,30 @@ class LinkedInClient:
                             "is_connection": True,
                             "message_sent": True,
                         })
-                    except WorkflowAbortedException:
-                        raise  # Re-raise abort exception immediately
+
+                        # Close the chat modal after sending
+                        page.wait_for_timeout(500)  # Wait for message to be sent
+                        page.evaluate("""
+                            () => {
+                                const closeButtons = document.querySelectorAll(
+                                    '.msg-overlay-conversation-bubble button[aria-label*="Close"], ' +
+                                    '.msg-overlay-bubble-header button[aria-label*="Close"], ' +
+                                    '[role="dialog"] button[aria-label*="Close"]'
+                                );
+                                for (const btn of closeButtons) {
+                                    try { btn.click(); break; } catch (e) {}
+                                }
+                            }
+                        """)
+                        page.wait_for_timeout(500)  # Wait for modal to fully close before next message
+
+                        # If first_degree_only mode, stop after first successful message
+                        if first_degree_only:
+                            logger.info("First degree only mode: Stopping after first successful message")
+                            return page_messaged
+
+                    except (WorkflowAbortedException, MissingHebrewNamesException):
+                        raise  # Re-raise these exceptions immediately
                     except Exception as send_error:
                         logger.warning(f"Could not find Send button for {name}: {send_error}")
                         # Close the modal
@@ -1797,8 +2006,8 @@ class LinkedInClient:
                             close_btn.click()
                             page.wait_for_timeout(300)
 
-                except WorkflowAbortedException:
-                    raise  # Re-raise abort exception immediately
+                except (WorkflowAbortedException, MissingHebrewNamesException):
+                    raise  # Re-raise these exceptions immediately
                 except Exception as input_error:
                     logger.warning(f"Could not find message input for {name}: {input_error}")
                     # Close the modal
@@ -1812,8 +2021,8 @@ class LinkedInClient:
                 # Small delay between messages (with abort check)
                 self._wait_with_abort_check(page, DELAY_MS)
 
-            except WorkflowAbortedException:
-                raise  # Re-raise abort exception immediately
+            except (WorkflowAbortedException, MissingHebrewNamesException):
+                raise  # Re-raise these exceptions immediately
 
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
@@ -1853,6 +2062,8 @@ class LinkedInClient:
                     viewport={"width": 1280, "height": 720},
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
                 logger.info("Browser launched, navigating to connections page...")
 
                 # Go to connections page
@@ -1863,7 +2074,7 @@ class LinkedInClient:
 
                 # Wait a bit for dynamic content to load
                 logger.info("DOM loaded, waiting for dynamic content...")
-                page.wait_for_timeout(3000)
+                _human_delay_long()
 
                 connections = []
 
@@ -1972,12 +2183,14 @@ class LinkedInClient:
                     viewport={"width": 1280, "height": 720},
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Step 1: Go to LinkedIn feed page
                 logger.info("Step 1: Going to LinkedIn feed page...")
                 page.goto("https://www.linkedin.com/feed/", timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2000)
+                _human_delay_medium()
 
                 # Step 2: Find and click the search bar, then type company name
                 logger.info(f"Step 2: Searching for '{company}' in search bar...")
@@ -2222,10 +2435,13 @@ class LinkedInClient:
                     headless=False,  # Visible for messaging (safer)
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Go to the person's profile
                 page.goto(f"https://www.linkedin.com/in/{public_id}/")
                 page.wait_for_load_state("networkidle")
+                _human_delay_medium()
 
                 # Click Message button
                 message_btn = page.query_selector("button:has-text('Message')")
@@ -2283,10 +2499,13 @@ class LinkedInClient:
                     headless=False,  # Visible for connection requests (safer)
                 )
                 page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
 
                 # Go to the person's profile
                 page.goto(f"https://www.linkedin.com/in/{public_id}/")
                 page.wait_for_load_state("networkidle")
+                _human_delay_medium()
 
                 # Click Connect button
                 connect_btn = page.query_selector("button:has-text('Connect')")
@@ -2325,6 +2544,492 @@ class LinkedInClient:
             except Exception as e:
                 logger.error(f"Failed to send connection request: {e}")
                 return False
+
+    async def check_for_replies(self, contacts: list[dict], company: str) -> list[dict]:
+        """
+        Check if any of the contacts we messaged have replied.
+
+        Args:
+            contacts: List of contact dicts with 'name', 'linkedin_url', 'public_id'
+            company: Company name for context
+
+        Returns:
+            List of contacts who have replied
+        """
+        if not self._logged_in:
+            logger.error("Not logged in")
+            return []
+
+        if not contacts:
+            logger.info("No contacts to check for replies")
+            return []
+
+        return await _run_playwright_async(self._check_for_replies_sync, contacts, company)
+
+    def _check_for_replies_sync(self, contacts: list[dict], company: str) -> list[dict]:
+        """Synchronous version of check_for_replies."""
+        if not HAS_PLAYWRIGHT:
+            return []
+
+        replied_contacts = []
+
+        with sync_playwright() as p:
+            context = None
+            try:
+                context = p.chromium.launch_persistent_context(
+                    str(BROWSER_DATA_PATH),
+                    headless=False,
+                    viewport={"width": 1280, "height": 720},
+                    args=["--window-size=1300,750", "--window-position=100,100"],
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(10000)  # 10 second timeout instead of 30
+                _apply_stealth(page)
+
+                # Go to LinkedIn feed (any page with the navbar)
+                logger.info("Going to LinkedIn feed to access messaging...")
+                page.goto("https://www.linkedin.com/feed/", timeout=60000)
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+                _human_delay_medium()
+                page.wait_for_timeout(DELAY_MS)
+
+                # Close any open message overlays before starting
+                self._close_all_message_overlays(page)
+
+                # Click the floating "Messaging" button at bottom right to open the messaging panel
+                # This is NOT the navbar link - it's a floating chat-style button
+                logger.info("Looking for floating Messaging button at bottom right...")
+
+                # First, check if the messaging panel is already open/expanded
+                # The panel is open if we can see the conversations list or search input
+                panel_open_selectors = [
+                    ".msg-overlay-list-bubble--is-open",
+                    ".msg-overlay-list-bubble__conversations-container",
+                    ".msg-conversations-container",
+                    ".msg-overlay-list-bubble input[placeholder*='Search']",
+                    ".msg-search-form input",
+                ]
+
+                panel_already_open = False
+                for selector in panel_open_selectors:
+                    try:
+                        if page.query_selector(selector):
+                            panel_already_open = True
+                            logger.info(f"Messaging panel is already open (found: {selector})")
+                            break
+                    except:
+                        continue
+
+                if not panel_already_open:
+                    # Look for the floating messaging button at bottom right
+                    # It's typically a bubble/header that shows "Messaging"
+                    messaging_button_selectors = [
+                        # The header bar of the messaging widget (clickable to expand)
+                        ".msg-overlay-list-bubble__header",
+                        ".msg-overlay-list-bubble__default-header",
+                        # Floating messaging bubble header button
+                        ".msg-overlay-bubble-header",
+                        "button.msg-overlay-bubble-header__button",
+                        # The messaging dock/tray at bottom
+                        ".msg-overlay-list-bubble",
+                        # Alternative: look for the messaging trigger
+                        "[data-control-name='overlay.open_messaging_overlay']",
+                        "button[aria-label='Open messaging overlay']",
+                        ".msg-overlay-list-bubble-search__search-trigger",
+                    ]
+
+                    messaging_button = None
+                    for selector in messaging_button_selectors:
+                        try:
+                            messaging_button = page.query_selector(selector)
+                            if messaging_button:
+                                logger.info(f"Found messaging button with selector: {selector}")
+                                break
+                        except:
+                            continue
+
+                    if messaging_button:
+                        messaging_button.click()
+                        page.wait_for_timeout(1500)
+                        _human_delay_medium()
+                    else:
+                        # If no floating button found, the messaging widget might be minimized
+                        # Try clicking on any minimized messaging element
+                        logger.info("No floating button found, trying to find minimized messaging widget...")
+
+                        minimized_selectors = [
+                            ".msg-overlay-list-bubble--is-minimized",
+                            ".msg-overlay__bubble-minimized",
+                        ]
+
+                        for selector in minimized_selectors:
+                            try:
+                                minimized = page.query_selector(selector)
+                                if minimized:
+                                    minimized.click()
+                                    page.wait_for_timeout(1000)
+                                    logger.info(f"Clicked minimized messaging widget: {selector}")
+                                    break
+                            except:
+                                continue
+
+                    # Wait for the messaging overlay panel to be open and showing conversations
+                    # (only if we clicked to open it)
+                    logger.info("Waiting for messaging panel to open...")
+                    try:
+                        page.wait_for_selector(".msg-overlay-list-bubble--is-open, .msg-overlay-list-bubble__conversations-container, .msg-conversations-container", timeout=10000)
+                        logger.info("Messaging panel is now open")
+                    except:
+                        logger.warning("Messaging panel did not appear, trying to continue anyway...")
+
+                for contact in contacts:
+                    self.check_abort()
+
+                    name = contact.get("name", "")
+                    public_id = contact.get("public_id", "")
+
+                    if not name:
+                        continue
+
+                    logger.info(f"Checking for reply from {name}...")
+
+                    try:
+                        # Search for the conversation with this person in the messaging overlay
+                        # The search input is inside the messaging overlay panel
+                        search_input_selectors = [
+                            ".msg-overlay-list-bubble input[placeholder*='Search']",
+                            ".msg-overlay-list-bubble input[type='search']",
+                            ".msg-overlay-list-bubble input",
+                            ".msg-overlay-container input[placeholder*='Search']",
+                            ".msg-search-form input",
+                            "input[placeholder*='Search messages']",
+                            ".msg-overlay-list-bubble__search-container input",
+                            # Alternative: the search trigger button that reveals the input
+                            ".msg-overlay-list-bubble-search__search-typeahead-input",
+                            ".msg-overlay-list-bubble input[aria-label*='Search']",
+                        ]
+
+                        search_input = None
+                        for selector in search_input_selectors:
+                            try:
+                                search_input = page.query_selector(selector)
+                                if search_input:
+                                    logger.info(f"Found search input with selector: {selector}")
+                                    break
+                            except:
+                                continue
+
+                        if search_input:
+                            # Click to focus, then clear and type
+                            try:
+                                search_input.click()
+                                page.wait_for_timeout(200)
+                            except:
+                                pass
+                            search_input.fill("")
+                            page.wait_for_timeout(300)
+                            search_input.fill(name)
+                            page.wait_for_timeout(1500)  # Give more time for search results
+                        else:
+                            logger.warning(f"Could not find search input in messaging panel")
+                            # Try to log what we can see for debugging
+                            try:
+                                panel_html = page.evaluate("() => document.querySelector('.msg-overlay-list-bubble')?.innerHTML?.substring(0, 500) || 'No panel found'")
+                                logger.debug(f"Panel HTML preview: {panel_html[:200] if panel_html else 'None'}...")
+                            except:
+                                pass
+
+                        # Look for conversation in the messaging overlay list
+                        conversation_selectors = [
+                            f".msg-overlay-list-bubble li:has-text('{name}')",
+                            f".msg-conversation-listitem:has-text('{name}')",
+                            f".msg-conversations-container__convo-item:has-text('{name}')",
+                            f".msg-overlay-list-bubble__convo-card:has-text('{name}')",
+                        ]
+
+                        conversation = None
+                        for selector in conversation_selectors:
+                            try:
+                                conversation = page.query_selector(selector)
+                                if conversation:
+                                    break
+                            except:
+                                continue
+
+                        if not conversation:
+                            logger.info(f"No conversation found with {name}")
+                            page.wait_for_timeout(500)
+                            continue
+
+                        # Click to open the conversation
+                        logger.info(f"Found conversation with {name}, clicking to open...")
+                        conversation.click()
+                        page.wait_for_timeout(2000)  # Give more time for conversation to load
+
+                        # Wait for the conversation bubble to actually open
+                        # The conversation opens in a separate bubble/window
+                        conversation_opened = False
+                        convo_bubble_selectors = [
+                            ".msg-overlay-conversation-bubble",
+                            ".msg-convo-wrapper",
+                            ".msg-s-message-list",
+                            ".msg-overlay-conversation-bubble--is-active",
+                        ]
+
+                        for selector in convo_bubble_selectors:
+                            try:
+                                convo_bubble = page.query_selector(selector)
+                                if convo_bubble:
+                                    conversation_opened = True
+                                    logger.info(f"Conversation bubble opened (found: {selector})")
+                                    break
+                            except:
+                                continue
+
+                        if not conversation_opened:
+                            logger.warning(f"Conversation bubble didn't open for {name}, trying alternative methods...")
+
+                            # Try clicking on a more specific element within the conversation card
+                            # The conversation might need a double-click or a specific child element click
+                            try:
+                                # Try finding and clicking on the name/title within the conversation card
+                                name_element = conversation.query_selector("span, a, .msg-conversation-listitem__participant-names")
+                                if name_element:
+                                    name_element.click()
+                                    page.wait_for_timeout(2000)
+                                    logger.info(f"Clicked on name element within conversation card")
+                                else:
+                                    # Try double-clicking
+                                    conversation.dblclick()
+                                    page.wait_for_timeout(2000)
+                                    logger.info(f"Double-clicked on conversation")
+                            except Exception as click_error:
+                                logger.warning(f"Alternative click failed: {click_error}")
+
+                            # Check again if conversation opened
+                            for selector in convo_bubble_selectors:
+                                try:
+                                    convo_bubble = page.query_selector(selector)
+                                    if convo_bubble:
+                                        conversation_opened = True
+                                        logger.info(f"Conversation bubble now opened (found: {selector})")
+                                        break
+                                except:
+                                    continue
+
+                        if not conversation_opened:
+                            logger.warning(f"Could not open conversation for {name}, skipping...")
+                            page.wait_for_timeout(500)
+                            continue
+
+                        # Check if there's a reply - look for ANY inbound message in the conversation
+                        # If they sent us ANY message, it means they replied (regardless of who sent last)
+                        # Pass the contact name so we can check if messages are from them
+                        reply_check_result = page.evaluate("""
+                            (contactName) => {
+                                // Look in the conversation bubble/overlay - try multiple selectors
+                                const bubbleSelectors = [
+                                    '.msg-overlay-conversation-bubble',
+                                    '.msg-convo-wrapper',
+                                    '.msg-s-message-list',
+                                    '.msg-s-message-list-container',
+                                    '[data-test-id="message-list"]'
+                                ];
+
+                                let bubble = null;
+                                for (const sel of bubbleSelectors) {
+                                    bubble = document.querySelector(sel);
+                                    if (bubble) break;
+                                }
+
+                                if (!bubble) {
+                                    return { found: false, error: 'No conversation bubble found' };
+                                }
+
+                                // Find all message events/groups - try multiple patterns
+                                let messageItems = bubble.querySelectorAll('.msg-s-message-list__event');
+                                if (messageItems.length === 0) {
+                                    messageItems = bubble.querySelectorAll('.msg-s-message-group');
+                                }
+                                if (messageItems.length === 0) {
+                                    messageItems = bubble.querySelectorAll('[class*="message-list__event"]');
+                                }
+
+                                if (messageItems.length === 0) {
+                                    return { found: false, error: 'No message items found', bubbleHTML: bubble.innerHTML.substring(0, 500) };
+                                }
+
+                                // Get the first part of the contact's name for matching (e.g., "Arad" from "Arad Zilberstein")
+                                const contactFirstName = contactName.split(' ')[0].toLowerCase();
+
+                                // Count inbound (from them) and outbound (from us) messages
+                                let inboundCount = 0;
+                                let outboundCount = 0;
+                                let inboundPreview = '';
+                                let debugInfo = [];
+
+                                for (const item of messageItems) {
+                                    const classes = item.className.toLowerCase();
+                                    const itemText = item.textContent || '';
+                                    const itemHTML = item.innerHTML || '';
+
+                                    // Default assumption: message is OUTBOUND (from us)
+                                    // We only count as inbound if we have positive evidence it's from them
+                                    // This prevents false positives where we sent a message and it looks like a reply
+                                    let isInbound = false;
+                                    let detectionMethod = 'default_outbound';
+
+                                    // Method 1: Check for explicit CSS classes
+                                    if (classes.includes('outbound')) {
+                                        isInbound = false;
+                                        detectionMethod = 'outbound_class';
+                                    } else if (classes.includes('inbound')) {
+                                        isInbound = true;
+                                        detectionMethod = 'inbound_class';
+                                    }
+
+                                    // Method 2: Look for their profile image/avatar (indicates their message)
+                                    if (!isInbound) {
+                                        const avatarSelectors = [
+                                            '.msg-s-message-group__profile-image',
+                                            '.presence-entity__image',
+                                            'img[class*="profile"]',
+                                            '.msg-s-event-listitem__avatar img'
+                                        ];
+                                        for (const sel of avatarSelectors) {
+                                            const avatar = item.querySelector(sel);
+                                            if (avatar) {
+                                                const avatarAlt = (avatar.alt || '').toLowerCase();
+                                                // If avatar contains their name, this is THEIR message
+                                                if (avatarAlt && avatarAlt.includes(contactFirstName)) {
+                                                    isInbound = true;
+                                                    detectionMethod = 'avatar_contains_name: ' + avatarAlt;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Method 3: Check for sender name element showing their name
+                                    if (!isInbound) {
+                                        const senderSelectors = [
+                                            '.msg-s-message-group__name',
+                                            '.msg-s-event-listitem__name',
+                                            '[class*="sender"]',
+                                            '[class*="author"]'
+                                        ];
+                                        for (const sel of senderSelectors) {
+                                            const senderEl = item.querySelector(sel);
+                                            if (senderEl) {
+                                                const senderText = senderEl.textContent.toLowerCase().trim();
+                                                // If sender element shows their name, it's their message
+                                                if (senderText && senderText.includes(contactFirstName)) {
+                                                    isInbound = true;
+                                                    detectionMethod = 'sender_name_match: ' + senderText;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Method 4: Check the message item structure for participant indicators
+                                    if (!isInbound) {
+                                        // LinkedIn may show participant name in message group header
+                                        const participantName = item.querySelector('.msg-s-message-group__participant-name');
+                                        if (participantName) {
+                                            const nameText = participantName.textContent.toLowerCase().trim();
+                                            if (nameText.includes(contactFirstName)) {
+                                                isInbound = true;
+                                                detectionMethod = 'participant_name: ' + nameText;
+                                            }
+                                        }
+                                    }
+
+                                    const isOutbound = !isInbound;
+
+                                    debugInfo.push({
+                                        classes: classes.substring(0, 100),
+                                        isOutbound: isOutbound,
+                                        isInbound: isInbound,
+                                        method: detectionMethod,
+                                        textPreview: itemText.substring(0, 50)
+                                    });
+
+                                    if (isOutbound) {
+                                        outboundCount++;
+                                    } else {
+                                        // This is an inbound message (from them) - they replied!
+                                        inboundCount++;
+                                        if (!inboundPreview) {
+                                            inboundPreview = item.outerHTML.substring(0, 200);
+                                        }
+                                    }
+                                }
+
+                                // If there's ANY inbound message, they replied
+                                const hasReply = inboundCount > 0;
+
+                                return {
+                                    found: true,
+                                    totalMessages: messageItems.length,
+                                    inboundCount: inboundCount,
+                                    outboundCount: outboundCount,
+                                    hasReply: hasReply,
+                                    inboundPreview: inboundPreview,
+                                    contactFirstName: contactFirstName,
+                                    debug: debugInfo
+                                };
+                            }
+                        """, name)
+
+                        # Log the detailed result
+                        logger.info(f"Reply check result for {name}: {reply_check_result}")
+
+                        has_reply = reply_check_result.get('hasReply', False) if isinstance(reply_check_result, dict) else False
+
+                        if has_reply:
+                            logger.info(f"Found reply from {name}!")
+                            replied_contacts.append(contact)
+                        else:
+                            logger.info(f"No reply yet from {name}")
+
+                        # Close the conversation bubble to go back to the list
+                        page.evaluate("""
+                            () => {
+                                const closeButtons = document.querySelectorAll(
+                                    '.msg-overlay-conversation-bubble button[aria-label*="Close"], ' +
+                                    '.msg-overlay-bubble-header button[aria-label*="Close"]'
+                                );
+                                for (const btn of closeButtons) {
+                                    try { btn.click(); } catch(e) {}
+                                }
+                            }
+                        """)
+                        page.wait_for_timeout(500)
+
+                    except WorkflowAbortedException:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Error checking reply from {name}: {e}")
+                        continue
+
+                return replied_contacts
+
+            except WorkflowAbortedException:
+                raise
+            except Exception as e:
+                logger.error(f"Error checking for replies: {e}")
+                return replied_contacts
+
+            finally:
+                # ALWAYS close the browser
+                if context:
+                    try:
+                        logger.info("Closing browser after reply check...")
+                        context.close()
+                        logger.info("Browser closed after reply check")
+                    except Exception as close_error:
+                        logger.warning(f"Error closing browser: {close_error}")
 
 
 # Global client instance

@@ -163,7 +163,7 @@ class TestDatabaseTableStructure:
         from app.models.contact import Contact
 
         columns = {c.name for c in Contact.__table__.columns}
-        expected = {"id", "linkedin_url", "name", "company", "gender", "is_connection", "job_id"}
+        expected = {"id", "linkedin_url", "name", "company", "is_connection", "job_id"}
         assert expected.issubset(columns)
 
     def test_templates_table_columns(self):

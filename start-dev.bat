@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 echo ========================================
 echo    JobiAI Development Environment
 echo ========================================
@@ -12,51 +13,62 @@ echo [INFO] Docker is not running. Starting Docker Desktop...
 start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
 
 echo Waiting for Docker to initialize...
-set /a attempts=0
+set attempts=0
 
 :wait_for_docker
 set /a attempts+=1
-if %attempts% gtr 20 (
-    echo [ERROR] Docker failed to start after 40 seconds.
-    echo Please start Docker Desktop manually and try again.
+if %attempts% gtr 30 (
+    echo [ERROR] Docker failed to start after 90 seconds.
     pause
     exit /b 1
 )
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 docker info >nul 2>&1
-if %errorlevel% neq 0 (
-    echo     Still waiting... (%attempts%/20)
-    goto wait_for_docker
-)
+set docker_result=!errorlevel!
+if !docker_result! equ 0 goto docker_is_ready
+echo     Still waiting... (!attempts!/30)
+goto wait_for_docker
+
+:docker_is_ready
 echo [OK] Docker is now running!
+
+:: Stop any auto-started containers
+echo Stopping other containers...
+for /f "tokens=*" %%i in ('docker ps -q') do docker stop %%i >nul 2>&1
 
 :docker_ready
 echo.
 echo [1/4] Starting PostgreSQL database...
 cd /d %~dp0
+:: Start our database container
+docker start jobiai-db >nul 2>&1
+if !errorlevel! equ 0 goto db_started
+echo Container not found, creating with docker-compose...
 docker-compose up -d db
-if %errorlevel% neq 0 (
+if !errorlevel! neq 0 (
     echo [ERROR] Failed to start PostgreSQL
     pause
     exit /b 1
 )
+:db_started
 
 :: Wait for PostgreSQL to be healthy
 echo Waiting for PostgreSQL to be ready...
-set /a db_attempts=0
+set db_attempts=0
 
 :wait_for_db
 set /a db_attempts+=1
-if %db_attempts% gtr 30 (
+if !db_attempts! gtr 30 (
     echo [ERROR] PostgreSQL failed to become ready after 30 seconds.
     pause
     exit /b 1
 )
-docker-compose exec -T db pg_isready -U postgres >nul 2>&1
-if %errorlevel% neq 0 (
-    timeout /t 1 /nobreak >nul
-    goto wait_for_db
-)
+docker exec jobiai-db pg_isready -U postgres >nul 2>&1
+if !errorlevel! equ 0 goto db_ready_ok
+timeout /t 1 /nobreak >nul
+goto wait_for_db
+
+:db_ready_ok
 echo [OK] PostgreSQL is ready!
 
 :: Run migrations
@@ -68,7 +80,8 @@ if not exist "venv" (
     python -m venv venv
 )
 call venv\Scripts\activate.bat
-pip install -r requirements.txt -q
+python -m pip install --upgrade pip -q 2>nul
+pip install -r requirements.txt -q 2>nul
 alembic upgrade head
 if %errorlevel% neq 0 (
     echo [WARNING] Migration failed - database might already be up to date

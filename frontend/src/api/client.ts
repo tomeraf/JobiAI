@@ -39,8 +39,8 @@ export const jobsApi = {
   triggerProcess: (id: number) =>
     api.post(`/jobs/${id}/process`).then(res => res.data),
 
-  triggerWorkflow: (id: number, templateId?: number) =>
-    api.post(`/jobs/${id}/workflow`, { template_id: templateId }).then(res => res.data),
+  triggerWorkflow: (id: number, templateId?: number, forceSearch?: boolean, firstDegreeOnly?: boolean) =>
+    api.post(`/jobs/${id}/workflow`, { template_id: templateId, force_search: forceSearch, first_degree_only: firstDegreeOnly }).then(res => res.data),
 
   searchConnections: (id: number) =>
     api.post(`/jobs/${id}/search-connections`).then(res => res.data),
@@ -51,11 +51,35 @@ export const jobsApi = {
   getPendingHebrewNames: (id: number) =>
     api.get(`/jobs/${id}/pending-hebrew-names`).then(res => res.data),
 
+  getContacts: (id: number) =>
+    api.get(`/jobs/${id}/contacts`).then(res => res.data),
+
   abort: () =>
     api.post('/jobs/abort').then(res => res.data),
 
   getCurrent: () =>
     api.get('/jobs/current').then(res => res.data),
+
+  reset: (id: number) =>
+    api.post(`/jobs/${id}/reset`).then(res => res.data),
+
+  findMore: (id: number) =>
+    api.post(`/jobs/${id}/find-more`).then(res => res.data),
+
+  markContactReplied: (jobId: number, contactId: number) =>
+    api.post(`/jobs/${jobId}/contacts/${contactId}/mark-replied`).then(res => res.data),
+
+  deleteContact: (jobId: number, contactId: number) =>
+    api.delete(`/jobs/${jobId}/contacts/${contactId}`).then(res => res.data),
+
+  updateCompanyName: (id: number, companyName: string) =>
+    api.put(`/jobs/${id}/company`, { company_name: companyName }).then(res => res.data),
+
+  markDone: (id: number) =>
+    api.post(`/jobs/${id}/mark-done`).then(res => res.data),
+
+  markRejected: (id: number) =>
+    api.post(`/jobs/${id}/mark-rejected`).then(res => res.data),
 }
 
 // Templates API

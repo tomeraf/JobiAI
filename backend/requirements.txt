@@ -11,15 +11,13 @@ psycopg2-binary==2.9.9
 
 # Browser automation for LinkedIn
 playwright==1.40.0
+playwright-stealth==1.0.6
 
 # Utilities
 python-dotenv==1.0.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
 httpx==0.26.0
-
-# Gender detection
-gender-guesser==0.4.0
 
 # Windows utilities (for bringing browser to foreground)
 pywin32==306; sys_platform == "win32"
