@@ -156,6 +156,7 @@ class LinkedInClient:
             cls._instance._context = None
             cls._instance._abort_requested = False
             cls._instance._current_job_id = None
+            cls._instance._queued_jobs = []  # Jobs waiting to run
         return cls._instance
 
     def __init__(self):
@@ -186,6 +187,26 @@ class LinkedInClient:
     def get_current_job(self) -> int | None:
         """Get the currently running job ID."""
         return self._current_job_id
+
+    def add_to_queue(self, job_id: int):
+        """Add a job to the queue of jobs waiting to run."""
+        if job_id not in self._queued_jobs:
+            self._queued_jobs.append(job_id)
+            logger.info(f"Job {job_id} added to queue. Queue: {self._queued_jobs}")
+
+    def remove_from_queue(self, job_id: int):
+        """Remove a job from the queue."""
+        if job_id in self._queued_jobs:
+            self._queued_jobs.remove(job_id)
+            logger.info(f"Job {job_id} removed from queue. Queue: {self._queued_jobs}")
+
+    def get_queued_jobs(self) -> list[int]:
+        """Get list of job IDs waiting in queue."""
+        return list(self._queued_jobs)
+
+    def is_job_queued(self, job_id: int) -> bool:
+        """Check if a job is in the queue."""
+        return job_id in self._queued_jobs
 
     def check_abort(self):
         """Check if abort was requested and raise exception if so."""
@@ -1035,6 +1056,25 @@ class LinkedInClient:
 
     def _apply_connection_filter(self, page, degree: str):
         """Apply 1st or 2nd degree connection filter. Uses retry logic with progressive delays."""
+        # First, clear any existing degree filters by clicking on active ones to toggle them off
+        # LinkedIn filter buttons are toggles - clicking an active one deselects it
+        other_degrees = ['1st', '2nd', '3rd+']
+        other_degrees.remove(degree) if degree in other_degrees else None
+
+        for other_degree in other_degrees:
+            try:
+                # Check if this filter is currently active (has aria-pressed="true" or similar)
+                active_btn = page.query_selector(f"button:has-text('{other_degree}')[aria-pressed='true']")
+                if not active_btn:
+                    # Try alternative: check if button has 'selected' class or similar
+                    active_btn = page.query_selector(f"button.artdeco-pill--selected:has-text('{other_degree}')")
+                if active_btn:
+                    logger.info(f"Clearing active {other_degree} filter")
+                    active_btn.click()
+                    page.wait_for_timeout(500)
+            except Exception:
+                pass  # Ignore errors clearing other filters
+
         degree_selectors = [
             f"button:has-text('{degree}')",
             f"button[aria-label*='{degree}']",
@@ -1366,7 +1406,7 @@ class LinkedInClient:
         connected_people = []
         company_lower = company.lower()
         page_num = 0
-        max_pages = 10  # Safety limit to prevent infinite loops
+        max_pages = 5  # Limit to 5 pages of search results
 
         while len(connected_people) < max_requests and page_num < max_pages:
             page_num += 1
@@ -1400,32 +1440,41 @@ class LinkedInClient:
     def _go_to_next_search_page(self, page) -> bool:
         """Navigate to the next search results page. Returns True if successful."""
         try:
-            # Look for "Next" button with retry (pagination may take time to load)
-            next_btn = None
-            next_btn_selectors = [
+            # First scroll to bottom to ensure pagination is in view
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(500)  # Brief wait after scroll
+
+            # The Next button should already be loaded since we just processed results
+            # Try multiple selectors - the button might be rendered differently
+            selectors = [
                 "button[aria-label='Next']",
                 "button:has-text('Next')",
                 "a[aria-label='Next']",
+                "[aria-label='Next']",
             ]
 
-            # Try a few times with short delays (pagination might still be loading)
-            for attempt in range(3):
-                for selector in next_btn_selectors:
-                    next_btn = page.query_selector(selector)
-                    if next_btn:
-                        break
+            next_btn = None
+            for selector in selectors:
+                next_btn = page.query_selector(selector)
                 if next_btn:
+                    logger.info(f"Found Next button with selector: {selector}")
                     break
-                # Wait a bit before retrying
-                page.wait_for_timeout(500)
 
-            if next_btn and next_btn.is_enabled():
-                logger.info("Clicking Next button to go to next page")
-                next_btn.click()
-                page.wait_for_timeout(DELAY_MS * 2)  # Wait for page to load
-                return True
+            if next_btn:
+                is_enabled = next_btn.is_enabled()
+                logger.info(f"Next button found, is_enabled={is_enabled}")
+                if is_enabled:
+                    logger.info("Clicking Next button to go to next page")
+                    next_btn.click()
+                    # Wait for new results to load
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(DELAY_MS * 2)  # Extra wait for dynamic content
+                    return True
+                else:
+                    logger.info("Next button is disabled - no more pages")
+                    return False
             else:
-                logger.info("Next button not found or disabled after retries")
+                logger.info("Next button not found on this page")
                 return False
         except WorkflowAbortedException:
             raise  # Re-raise abort exception immediately
@@ -1511,6 +1560,25 @@ class LinkedInClient:
                         logger.info(f"Skipping {name} - company '{company_lower}' not in headline: '{headline}'")
                     continue
 
+                # Skip VIPs (CEOs, founders, etc.) - they're too important to cold connect
+                headline_lower = headline.lower()
+                vip_titles = [
+                    'ceo', 'chief executive',
+                    'cto', 'chief technology',
+                    'cfo', 'chief financial',
+                    'coo', 'chief operating',
+                    'cmo', 'chief marketing',
+                    'cpo', 'chief product',
+                    'founder', 'co-founder', 'cofounder',
+                    'owner', 'president', 'chairman',
+                    'managing director', 'general manager',
+                    'vp ', 'vice president',  # Note: space after 'vp' to avoid matching 'vp of recruiting'
+                ]
+                is_vip = any(title in headline_lower for title in vip_titles)
+                if is_vip:
+                    logger.info(f"Skipping {name} - VIP title detected in headline: '{headline}'")
+                    continue
+
                 # Get profile link
                 link = ""
                 for link_sel in ["a.app-aware-link[href*='/in/']", "a[href*='/in/']"]:
@@ -1550,7 +1618,21 @@ class LinkedInClient:
                 connect_btn.click()
                 page.wait_for_timeout(DELAY_MS)
 
-                # Handle the connection modal with retry logic
+                # Handle the connection modal
+                # First check if LinkedIn is asking for email verification (modal with disabled Send)
+                page.wait_for_timeout(DELAY_MS // 2)  # Wait for modal to appear
+
+                # Check for email verification modal - "Send without a note" will be disabled
+                send_without_note_btn = page.query_selector("button[aria-label='Send without a note'], button:has-text('Send without a note')")
+                if send_without_note_btn and not send_without_note_btn.is_enabled():
+                    # Email verification required - close modal and skip this person
+                    logger.info(f"Skipping {name} - LinkedIn requires email verification to connect")
+                    close_btn = page.query_selector("button[aria-label='Dismiss'], button[aria-label='Close']")
+                    if close_btn:
+                        close_btn.click()
+                        page.wait_for_timeout(DELAY_MS // 2)
+                    continue  # Don't count this person
+
                 send_btn_selectors = [
                     "button[aria-label='Send without a note']",
                     "button:has-text('Send without a note')",
@@ -1573,13 +1655,12 @@ class LinkedInClient:
                 except WorkflowAbortedException:
                     raise  # Re-raise abort exception immediately
                 except Exception as send_error:
-                    # Modal might have "Add a note" option - click Send without note
-                    # Or close the modal if we can't find send
-                    close_btn = page.query_selector("button[aria-label='Dismiss']")
+                    # Close the modal if we can't send
+                    close_btn = page.query_selector("button[aria-label='Dismiss'], button[aria-label='Close']")
                     if close_btn:
                         close_btn.click()
                         page.wait_for_timeout(DELAY_MS // 2)
-                    logger.warning(f"Could not find Send button for {name}: {send_error}")
+                    logger.warning(f"Could not send connection to {name}: {send_error}")
 
                 # Small delay between connection requests (with abort check)
                 self._wait_with_abort_check(page, DELAY_MS)
@@ -1713,6 +1794,25 @@ class LinkedInClient:
                         logger.info(f"Skipping {name} for messaging - company not in headline: '{headline}'")
                     continue
 
+                # Skip VIPs (CEOs, founders, etc.) - they're too important to cold message
+                headline_lower = headline.lower()
+                vip_titles = [
+                    'ceo', 'chief executive',
+                    'cto', 'chief technology',
+                    'cfo', 'chief financial',
+                    'coo', 'chief operating',
+                    'cmo', 'chief marketing',
+                    'cpo', 'chief product',
+                    'founder', 'co-founder', 'cofounder',
+                    'owner', 'president', 'chairman',
+                    'managing director', 'general manager',
+                    'vp ', 'vice president',  # Note: space after 'vp' to avoid matching 'vp of recruiting'
+                ]
+                is_vip = any(title in headline_lower for title in vip_titles)
+                if is_vip:
+                    logger.info(f"Skipping {name} - VIP title detected in headline: '{headline}'")
+                    continue
+
                 # Get profile link
                 link = ""
                 for link_sel in ["a.app-aware-link[href*='/in/']", "a[href*='/in/']"]:
@@ -1766,69 +1866,201 @@ class LinkedInClient:
                 # If we've messaged this person before or they messaged us, skip them
                 has_existing_history = False
                 try:
-                    # Use JavaScript to check for message history in the chat modal dialog
-                    # The chat popup is a DIV with role="dialog" (NOT an HTML <dialog> element!)
-                    # It also has class msg-overlay-conversation-bubble
-                    # Each message is a listitem with a paragraph. We count listitems with paragraphs to detect history.
-                    message_count = page.evaluate("""
+                    # Use JavaScript to check for ACTUAL message history in the chat modal
+                    # Returns {count, texts} for debugging
+                    # Wait a moment for chat content to load
+                    page.wait_for_timeout(500)
+
+                    history_result = page.evaluate("""
                         () => {
-                            // Find the messaging dialog - it's a DIV with role="dialog", NOT <dialog> HTML element
-                            const dialog = document.querySelector('[role="dialog"]') || document.querySelector('.msg-overlay-conversation-bubble');
+                            const result = { count: 0, texts: [], method: '', debug: {} };
+
+                            // Debug: Check what dialogs exist
+                            const roleDialog = document.querySelector('[role="dialog"]');
+                            const overlayBubble = document.querySelector('.msg-overlay-conversation-bubble');
+                            result.debug.hasRoleDialog = !!roleDialog;
+                            result.debug.hasOverlayBubble = !!overlayBubble;
+                            result.debug.roleDialogClasses = roleDialog ? roleDialog.className : 'N/A';
+                            result.debug.overlayBubbleClasses = overlayBubble ? overlayBubble.className : 'N/A';
+
+                            // Find the messaging dialog
+                            const dialog = roleDialog || overlayBubble;
                             if (!dialog) {
-                                console.log('No dialog found');
-                                return -1;  // Return -1 to indicate dialog not found
+                                result.count = -1;
+                                result.method = 'no dialog';
+                                result.debug.allDialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"]')).map(d => d.className).join(', ');
+                                return result;
                             }
 
-                            // Method 1: Look for msg-s-message-list__event elements
-                            // This is LinkedIn's specific class for actual message events (not reactions/spacers)
-                            // Class contains whitespace/newlines so we use attribute selector
-                            const messageEvents = dialog.querySelectorAll('li[class*="msg-s-message-list__event"]');
-                            if (messageEvents.length > 0) {
-                                console.log('Found ' + messageEvents.length + ' message events via msg-s-message-list__event');
-                                return messageEvents.length;
+                            // Debug: Check all potential message containers in the dialog
+                            result.debug.msgBodiesCount = dialog.querySelectorAll('.msg-s-event-listitem__body').length;
+                            result.debug.msgBubblesCount = dialog.querySelectorAll('.msg-s-message-group__bubble').length;
+                            result.debug.msgListContent = !!dialog.querySelector('ul.msg-s-message-list-content');
+                            result.debug.msgListOld = !!dialog.querySelector('ul.msg-s-message-list');
+                            result.debug.anyUlCount = dialog.querySelectorAll('ul').length;
+                            result.debug.anyLiCount = dialog.querySelectorAll('li').length;
+
+                            // Debug: Get first 3 class names of li elements to understand structure
+                            const lis = dialog.querySelectorAll('li');
+                            result.debug.liClasses = Array.from(lis).slice(0, 5).map(li => li.className.substring(0, 80));
+
+                            // Primary method: Look for message body elements directly
+                            // This is the most reliable selector for actual message content
+                            const messageBodies = dialog.querySelectorAll('.msg-s-event-listitem__body');
+                            if (messageBodies.length > 0) {
+                                result.method = 'bodies';
+                                messageBodies.forEach(body => {
+                                    const text = body.textContent.trim();
+                                    const textLower = text.toLowerCase();
+                                    // Skip system messages and deleted messages
+                                    if (textLower.includes('accepted your invitation') ||
+                                        textLower.includes('you are now connected') ||
+                                        textLower.includes('sent you a connection request') ||
+                                        textLower.includes('wants to connect') ||
+                                        textLower.includes('connection request') ||
+                                        textLower.includes('this message has been deleted')) {
+                                        result.texts.push('[SYSTEM] ' + text.substring(0, 50));
+                                        return;
+                                    }
+                                    result.count++;
+                                    result.texts.push(text.substring(0, 50));
+                                });
+                                return result;
                             }
 
-                            // Method 2: Look for the message list container and check list items
-                            const messageList = dialog.querySelector('ul');
+                            // Fallback: Look for message bubbles (older LinkedIn structure)
+                            const messageBubbles = dialog.querySelectorAll(
+                                '.msg-s-message-group__bubble'
+                            );
+
+                            if (messageBubbles.length > 0) {
+                                result.method = 'bubbles';
+                                messageBubbles.forEach(bubble => {
+                                    const text = bubble.textContent.trim();
+                                    const textLower = text.toLowerCase();
+                                    // Skip system messages only
+                                    if (textLower.includes('accepted your invitation') ||
+                                        textLower.includes('you are now connected') ||
+                                        textLower.includes('sent you a connection request') ||
+                                        textLower.includes('wants to connect') ||
+                                        textLower.includes('connection request')) {
+                                        result.texts.push('[SYSTEM] ' + text.substring(0, 50));
+                                        return;
+                                    }
+                                    result.count++;
+                                    result.texts.push(text.substring(0, 50));
+                                });
+                                return result;
+                            }
+
+                            // Fallback: Look for message list items with actual content
+                            // Note: LinkedIn changed from 'ul.msg-s-message-list' to 'ul.msg-s-message-list-content'
+                            const messageList = dialog.querySelector('ul.msg-s-message-list-content') || dialog.querySelector('ul.msg-s-message-list');
                             if (!messageList) {
-                                console.log('No message list found in dialog');
-                                return -2;  // Return -2 to indicate list not found
+                                result.count = -2;
+                                result.method = 'no list';
+                                // Extra debug: dump all UL classes in dialog
+                                result.debug.allUlClasses = Array.from(dialog.querySelectorAll('ul')).map(ul => ul.className.substring(0, 60));
+                                return result;
                             }
 
-                            // Count list items that have actual message content
-                            const listItems = messageList.querySelectorAll('li');
-                            let messageCount = 0;
-                            listItems.forEach(li => {
-                                const className = li.className || '';
+                            result.method = 'events';
+                            const messageEvents = messageList.querySelectorAll('li.msg-s-message-list__event');
 
-                                // Skip spacers, loaders, and non-message items
-                                if (className.includes('loader') ||
-                                    className.includes('top-of-list') ||
-                                    className.includes('typing-indicator') ||
-                                    className === '' ||
-                                    className.trim() === '') {
-                                    return;
-                                }
-
-                                // Check if this is a message event (has 'event' in class name)
-                                if (className.includes('event')) {
-                                    messageCount++;
-                                    return;
-                                }
-
-                                // Check for paragraph with substantial text (actual message content)
-                                const paragraph = li.querySelector('p');
-                                if (paragraph && paragraph.textContent.trim().length > 5) {
-                                    messageCount++;
-                                    return;
+                            messageEvents.forEach(event => {
+                                const messageBody = event.querySelector('.msg-s-event-listitem__body');
+                                if (messageBody) {
+                                    const text = messageBody.textContent.trim();
+                                    const textLower = text.toLowerCase();
+                                    // Skip system messages only
+                                    if (textLower.includes('accepted your invitation') ||
+                                        textLower.includes('you are now connected') ||
+                                        textLower.includes('connection request')) {
+                                        result.texts.push('[SYSTEM] ' + text.substring(0, 50));
+                                        return;
+                                    }
+                                    result.count++;
+                                    result.texts.push(text.substring(0, 50));
                                 }
                             });
-                            console.log('Found ' + messageCount + ' messages via list item analysis');
-                            return messageCount;
+
+                            return result;
                         }
                     """)
 
-                    logger.info(f"Message history check for {name}: found {message_count} messages")
+                    message_count = history_result.get('count', 0)
+                    detected_texts = history_result.get('texts', [])
+                    method_used = history_result.get('method', 'unknown')
+                    debug_info = history_result.get('debug', {})
+
+                    logger.info(f"Message history check for {name}: found {message_count} messages (method: {method_used})")
+                    logger.info(f"DEBUG info: {debug_info}")
+                    if detected_texts:
+                        logger.info(f"Detected texts: {detected_texts}")
+
+                    # If we got -2 (no list), this might be a timing issue - retry after more wait
+                    if message_count == -2:
+                        logger.warning(f"DETECTION FAILED for {name}: Could not find message list. Debug: {debug_info}")
+                        logger.info(f"Retrying detection for {name} after additional wait...")
+                        page.wait_for_timeout(1000)  # Wait 1 more second
+
+                        # Retry the detection
+                        retry_result = page.evaluate("""
+                            () => {
+                                const result = { count: 0, texts: [], method: '', debug: {} };
+                                const dialog = document.querySelector('[role="dialog"]') || document.querySelector('.msg-overlay-conversation-bubble');
+                                if (!dialog) {
+                                    result.count = -1;
+                                    result.method = 'no dialog (retry)';
+                                    return result;
+                                }
+
+                                result.debug.msgBodiesCount = dialog.querySelectorAll('.msg-s-event-listitem__body').length;
+                                result.debug.anyUlCount = dialog.querySelectorAll('ul').length;
+                                result.debug.anyLiCount = dialog.querySelectorAll('li').length;
+
+                                const messageBodies = dialog.querySelectorAll('.msg-s-event-listitem__body');
+                                if (messageBodies.length > 0) {
+                                    result.method = 'bodies (retry)';
+                                    messageBodies.forEach(body => {
+                                        const text = body.textContent.trim();
+                                        const textLower = text.toLowerCase();
+                                        if (textLower.includes('accepted your invitation') ||
+                                            textLower.includes('you are now connected') ||
+                                            textLower.includes('sent you a connection request') ||
+                                            textLower.includes('wants to connect') ||
+                                            textLower.includes('connection request') ||
+                                            textLower.includes('this message has been deleted')) {
+                                            result.texts.push('[SYSTEM] ' + text.substring(0, 50));
+                                            return;
+                                        }
+                                        result.count++;
+                                        result.texts.push(text.substring(0, 50));
+                                    });
+                                    return result;
+                                }
+
+                                // Still no bodies, check for any list
+                                const messageList = dialog.querySelector('ul.msg-s-message-list-content') || dialog.querySelector('ul.msg-s-message-list');
+                                if (!messageList) {
+                                    result.count = -2;
+                                    result.method = 'no list (retry)';
+                                    result.debug.allUlClasses = Array.from(dialog.querySelectorAll('ul')).map(ul => ul.className.substring(0, 60));
+                                    return result;
+                                }
+
+                                return result;
+                            }
+                        """)
+
+                        message_count = retry_result.get('count', 0)
+                        detected_texts = retry_result.get('texts', [])
+                        method_used = retry_result.get('method', 'unknown')
+                        debug_info = retry_result.get('debug', {})
+                        logger.info(f"RETRY result for {name}: found {message_count} messages (method: {method_used})")
+                        logger.info(f"RETRY DEBUG info: {debug_info}")
+                        if detected_texts:
+                            logger.info(f"RETRY Detected texts: {detected_texts}")
 
                     if message_count > 0:
                         has_existing_history = True
@@ -1989,12 +2221,11 @@ class LinkedInClient:
                                 }
                             }
                         """)
-                        page.wait_for_timeout(500)  # Wait for modal to fully close before next message
+                        page.wait_for_timeout(500)  # Wait for modal to fully close
 
-                        # If first_degree_only mode, stop after first successful message
-                        if first_degree_only:
-                            logger.info("First degree only mode: Stopping after first successful message")
-                            return page_messaged
+                        # Always stop after first successful message - workflow is: message ONE person, then wait for reply
+                        logger.info("Message sent successfully - stopping to wait for reply")
+                        return page_messaged
 
                     except (WorkflowAbortedException, MissingHebrewNamesException):
                         raise  # Re-raise these exceptions immediately

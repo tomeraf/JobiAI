@@ -76,7 +76,7 @@ class WorkflowOrchestrator:
 
         # Store previous state to restore on abort
         previous_status = job.status
-        previous_error = job.error_message
+        previous_workflow_step = job.workflow_step
 
         try:
             # Initialize services
@@ -100,9 +100,10 @@ class WorkflowOrchestrator:
 
         except WorkflowAbortedException:
             logger.info(f"Workflow aborted by user for job {job_id}, restoring previous state")
-            # Restore previous state instead of setting to ABORTED
+            # Restore previous state and workflow step, but show abort message
             job.status = previous_status
-            job.error_message = previous_error
+            job.workflow_step = previous_workflow_step
+            job.error_message = "Aborted by user"
 
             return {"success": False, "error": "Workflow aborted by user", "aborted": True}
 

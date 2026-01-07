@@ -146,54 +146,108 @@ class AbortResponse(BaseModel):
 @router.post("/abort", response_model=AbortResponse)
 async def abort_workflow(db: AsyncSession = Depends(get_db)):
     """
-    Abort the currently running workflow.
+    Abort the currently running workflow and clear the queue.
 
     This will:
     1. Signal the LinkedIn client to stop
     2. Set the job status to ABORTED
-    3. Close the browser
+    3. Clear all queued jobs
     """
     client = LinkedInClient.get_instance()
     current_job_id = client.get_current_job()
+    queued_jobs = client.get_queued_jobs()
 
-    if not current_job_id:
+    # Clear the queue
+    for job_id in queued_jobs:
+        client.remove_from_queue(job_id)
+
+    if not current_job_id and not queued_jobs:
         return AbortResponse(
             success=False,
-            message="No workflow is currently running",
+            message="No workflow is currently running or queued",
         )
 
-    # Request abort
-    client.request_abort(current_job_id)
+    if current_job_id:
+        # Request abort for running job
+        client.request_abort(current_job_id)
 
-    # Update job status immediately
-    result = await db.execute(select(Job).where(Job.id == current_job_id))
-    job = result.scalar_one_or_none()
+        # Update job status immediately
+        result = await db.execute(select(Job).where(Job.id == current_job_id))
+        job = result.scalar_one_or_none()
 
-    if job:
-        job.status = JobStatus.ABORTED
-        job.error_message = "Workflow aborted by user"
-        await db.commit()
+        if job:
+            job.status = JobStatus.ABORTED
+            job.error_message = "Workflow aborted by user"
+            await db.commit()
 
     return AbortResponse(
         success=True,
-        message="Abort signal sent. Workflow will stop at next checkpoint.",
+        message=f"Abort signal sent. Cleared {len(queued_jobs)} queued jobs.",
         job_id=current_job_id,
+    )
+
+
+@router.post("/abort/{job_id}", response_model=AbortResponse)
+async def abort_specific_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Abort a specific job - either currently running or queued.
+
+    If the job is currently running, it sends an abort signal.
+    If the job is queued, it removes it from the queue.
+    """
+    client = LinkedInClient.get_instance()
+    current_job_id = client.get_current_job()
+    queued_jobs = client.get_queued_jobs()
+
+    # Check if this job is currently running
+    if current_job_id == job_id:
+        client.request_abort(job_id)
+        result = await db.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+        if job:
+            job.status = JobStatus.ABORTED
+            job.error_message = "Workflow aborted by user"
+            await db.commit()
+        return AbortResponse(
+            success=True,
+            message="Abort signal sent. Workflow will stop at next checkpoint.",
+            job_id=job_id,
+        )
+
+    # Check if this job is queued
+    if job_id in queued_jobs:
+        client.remove_from_queue(job_id)
+        return AbortResponse(
+            success=True,
+            message="Job removed from queue.",
+            job_id=job_id,
+        )
+
+    return AbortResponse(
+        success=False,
+        message="Job is not running or queued.",
+        job_id=job_id,
     )
 
 
 @router.get("/current", response_model=dict)
 async def get_current_job():
     """
-    Get information about the currently running workflow.
+    Get information about the currently running workflow and queued jobs.
 
-    Returns the job ID if a workflow is running, or null if not.
+    Returns:
+        - is_running: True if a workflow is currently running
+        - job_id: The ID of the currently running job (or null)
+        - queued_jobs: List of job IDs waiting in queue
     """
     client = LinkedInClient.get_instance()
     current_job_id = client.get_current_job()
+    queued_jobs = client.get_queued_jobs()
 
     return {
         "is_running": current_job_id is not None,
         "job_id": current_job_id,
+        "queued_jobs": queued_jobs,
     }
 
 
@@ -306,6 +360,10 @@ async def retry_job(
         job_id=job.id,
     )
     db.add(activity)
+
+    # Add to queue so frontend knows this job is queued
+    client = LinkedInClient.get_instance()
+    client.add_to_queue(job_id)
 
     # Determine how to retry based on workflow_step
     if job.workflow_step == WorkflowStep.COMPANY_EXTRACTION or not job.company_name:
@@ -424,6 +482,11 @@ class WorkflowResponse(BaseModel):
 
 async def run_workflow_task(job_id: int, template_id: int | None = None, force_search: bool = False, first_degree_only: bool = False):
     """Background task to run the full workflow."""
+    client = LinkedInClient.get_instance()
+
+    # Remove from queue when starting (it was added when workflow was triggered)
+    client.remove_from_queue(job_id)
+
     logger.info(f"Starting workflow task for job {job_id} (force_search={force_search}, first_degree_only={first_degree_only})")
     orchestrator = None
     async with AsyncSessionLocal() as db:
@@ -487,6 +550,10 @@ async def trigger_workflow(
     template_id = workflow_data.template_id if workflow_data else None
     force_search = workflow_data.force_search if workflow_data else False
     first_degree_only = workflow_data.first_degree_only if workflow_data else False
+
+    # Add to queue so frontend knows this job is queued
+    client = LinkedInClient.get_instance()
+    client.add_to_queue(job_id)
 
     # Run workflow in background
     background_tasks.add_task(run_workflow_task, job_id, template_id, force_search, first_degree_only)

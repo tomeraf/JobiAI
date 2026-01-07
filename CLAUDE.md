@@ -246,27 +246,29 @@ created_at  DATETIME
 │  Search LinkedIn for people at the company                                   │
 │  - Uses search_company_all_degrees() which:                                  │
 │    1. Searches 1st degree connections                                        │
-│    2. If message needed, checks Hebrew name translation                      │
+│    2. Sends message to ONE person, then stops                                │
 │    3. Falls back to 2nd/3rd degree if no 1st available                       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                     ┌───────────────┼───────────────┐
                     │               │               │
                     ▼               ▼               ▼
-            Found 1st degree   Missing Hebrew   No connections
+            Found 1st degree   Missing Hebrew   No 1st degree
                     │          names found           │
                     │               │                │
                     ▼               ▼                ▼
 ┌──────────────────────┐  ┌──────────────────┐  ┌──────────────────┐
 │ MESSAGE_CONNECTIONS  │  │ NEEDS_HEBREW_    │  │ SEND_REQUESTS    │
 │                      │  │ NAMES            │  │                  │
-│ Send personalized    │  │                  │  │ Send connection  │
-│ messages to 1st      │  │ status=NEEDS_    │  │ requests to      │
-│ degree connections   │  │ INPUT            │  │ 2nd/3rd degree   │
-│                      │  │ Pause workflow   │  │                  │
-│ Checks message       │  │ Display UI for   │  │ (Only to people  │
-│ history first        │  │ user to provide  │  │ with company in  │
-│ (skips if exists)    │  │ translations     │  │ headline)        │
+│ Send ONE message to  │  │                  │  │ Send connection  │
+│ first available 1st  │  │ status=NEEDS_    │  │ requests to up   │
+│ degree connection    │  │ INPUT            │  │ to 10 people     │
+│                      │  │ Pause workflow   │  │ (max 5 pages)    │
+│ Skips VIPs (CEO,     │  │ Display UI for   │  │                  │
+│ CTO, founders, etc.) │  │ user to provide  │  │ Skips VIPs and   │
+│                      │  │ translations     │  │ email-required   │
+│ Checks for existing  │  │                  │  │ connections      │
+│ conversation history │  │                  │  │                  │
 └──────────────────────┘  └──────────────────┘  └──────────────────┘
            │                       │                    │
            ▼                       │                    ▼
@@ -274,11 +276,11 @@ created_at  DATETIME
 │ WAITING_FOR_REPLY    │           │           │ WAITING_FOR_     │
 │                      │◄──────────┘           │ ACCEPT           │
 │ status=COMPLETED     │  (User provides       │                  │
-│ Messages sent,       │   translations,       │ status=COMPLETED │
+│ Message sent,        │   translations,       │ status=COMPLETED │
 │ waiting for reply    │   workflow resumes)   │ Requests sent,   │
 │                      │                       │ waiting for      │
 │ Blue "Check Replies" │                       │ accepts          │
-│ button available     │                       │                  │
+│ + Green "Play" btn   │                       │                  │
 └──────────────────────┘                       └──────────────────┘
            │                                            │
            │  (User clicks Check Replies                │  (User clicks Play
@@ -340,6 +342,7 @@ Main workflow engine. Key methods:
 - Handles workflow state persistence and resumption
 - Catches `MissingHebrewNamesException` to pause for user input
 - Saves contacts to database after operations
+- **Abort handling**: Restores previous status and workflow_step, sets error_message to "Aborted by user"
 
 ### LinkedInClient (`services/linkedin/client.py`)
 Playwright browser automation. Key features:
@@ -393,12 +396,13 @@ Key features:
 - Hebrew names input form (for translations)
 - Workflow action buttons:
   - **Play** (green): Start workflow / Search new people (`forceSearch=true`)
-  - **Check Replies** (blue): Check for replies only (`forceSearch=false`)
+  - **Check Replies** (blue): Check for replies only (`forceSearch=false`) - shown for `waiting_for_reply` jobs
   - **Stop** (red): Abort running workflow
   - **Retry**: Retry failed job
   - **Delete**: Remove job
 - Contact viewer for each job
-- "Waiting for Reply/Accept" badges
+- "Waiting for Reply/Accept" badges with time since last check
+- **Dropdown filter**: Action-focused options (Run All Pending, Send All Messages, etc.) - only shows options with count > 0
 
 ### Dashboard (`pages/Dashboard.tsx`)
 - Statistics cards (jobs, messages, connections, errors)
@@ -468,12 +472,34 @@ FAST_MODE=true          # true=300ms delays, false=1000ms delays
 
 ## Important Implementation Details
 
+### Message ONE Person Strategy
+The bot sends a message to **ONE person** then stops and waits for a reply. This is intentional:
+1. More natural/human-like behavior
+2. Prevents spamming multiple people at the same company
+3. User can click Play again to search for more people if no reply
+
+### VIP Filtering
+The bot skips important people who shouldn't be cold-messaged:
+- CEO, CTO, CFO, COO, CMO, CPO (and "Chief X" variants)
+- Founders, Co-founders
+- Presidents, Chairmen
+- VPs, Vice Presidents
+- Managing Directors, General Managers, Owners
+
 ### Message History Detection
 Before sending a message, the bot:
 1. Opens the chat window with the contact
-2. Checks if there's existing message history
-3. If history exists, closes chat and skips to next contact
-4. This prevents duplicate outreach
+2. Checks if there's existing message history (real messages, not system notifications)
+3. Filters out system messages like "accepted your invitation", "you are now connected"
+4. If real history exists, closes chat and skips to next contact
+5. Logs detected text for debugging (first 50 chars of each detected item)
+
+### Email Verification Modal Handling
+When LinkedIn requires email to connect with someone:
+1. The "Send without a note" button is disabled
+2. Bot detects this and closes the modal (clicks X)
+3. Skips that person and doesn't count toward the 10-connection limit
+4. Continues to next person
 
 ### Hebrew Name Translation Flow
 1. When about to send message, checks if template contains Hebrew
@@ -487,34 +513,39 @@ Before sending a message, the bot:
 
 ### Multi-Degree Fallback
 1. First searches for 1st degree connections at company
-2. If found, sends personalized messages
+2. If found, sends ONE personalized message then stops
 3. If all 1st degree already messaged (history detected), tries 2nd degree
 4. If no 2nd degree with "Connect" button available, tries 3rd+ degree
-5. Sends connection requests to 2nd/3rd+ degree people
+5. Sends up to 10 connection requests across max 5 pages
 6. Only connects to people with company name in their headline (prevents random connections)
+
+### Pagination
+- Search results pagination: max 5 pages
+- Uses scroll-to-bottom + `query_selector` to find Next button
+- Waits for page load after clicking Next
 
 ### Two-Button Workflow Control
 - **Play button** (green, `forceSearch=true`): Searches for NEW people to message
 - **Check Replies button** (blue, `forceSearch=false`): Only checks inbox for replies
-- This gives users control over whether to expand outreach or just monitor existing
+- Both buttons available for `waiting_for_reply` jobs
 
 ### Reply Detection System
 The "Check Replies" feature opens LinkedIn messaging and checks if any contact has replied:
 
-1. **Panel Detection**: Before clicking the messaging button, checks if panel is already open using multiple selectors to avoid accidentally closing it
-2. **Conversation Search**: Finds conversations by contact name in the messaging overlay
-3. **Reply Detection**: Uses JavaScript to analyze messages in the conversation:
-   - **Method 1**: Check for 'outbound' CSS class (LinkedIn sometimes adds this)
-   - **Method 2**: Check sender name elements - if sender contains contact's name = inbound, if empty or "You" = outbound
-   - **Method 3**: Check for avatar/profile image - if avatar alt text contains their name = inbound
-4. **Result**: If ANY inbound message exists, marks as replied and sets `workflow_step=DONE`
+1. **Panel Detection**: Before clicking the messaging button, checks if panel is already open
+2. **Close existing chats**: Closes all open message overlays at page load
+3. **Conversation Search**: Finds conversations by contact name in the messaging overlay
+4. **Reply Detection**: Uses JavaScript to analyze messages in the conversation
+5. **Result**: If ANY inbound message exists, marks as replied and sets `workflow_step=DONE`
 
 **UI Feedback**: When in `waiting_for_reply` or `waiting_for_accept` state, the badge shows "No reply (checked Xm ago)" using the `last_reply_check_at` timestamp.
 
-**Key Files**:
-- Reply detection: `client.py` → `_check_for_replies_sync()`
-- Timestamp update: `workflow_orchestrator.py` → sets `job.last_reply_check_at`
-- UI display: `Jobs.tsx` → `WorkflowBadge` component with `formatTimeAgo()` helper
+### Abort Behavior
+When user clicks Stop/Abort:
+- **Status**: Restored to previous value (not set to ABORTED)
+- **Workflow step**: Restored to previous value
+- **Error message**: Set to "Aborted by user"
+- This allows resuming from where you left off
 
 ---
 

@@ -142,7 +142,17 @@ function JobSubmitForm({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
-function StatusBadge({ status, isWaiting, isProcessing }: { status: string; isWaiting?: boolean; isProcessing?: boolean }) {
+function StatusBadge({ status, isWaiting, isProcessing, isQueued }: { status: string; isWaiting?: boolean; isProcessing?: boolean; isQueued?: boolean }) {
+  // If job is queued (waiting in queue), show purple "Queued"
+  if (isQueued) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+        <Clock className="w-3 h-3" />
+        Queued
+      </span>
+    )
+  }
+
   // If job is waiting (ready to run), show blue "Waiting"
   if (isWaiting) {
     return (
@@ -198,7 +208,17 @@ function formatTimeAgo(dateStr: string | null): string | null {
   return `${diffDays}d ago`
 }
 
-function WorkflowBadge({ step, isProcessing, lastReplyCheckAt }: { step: string; isProcessing?: boolean; lastReplyCheckAt?: string | null }) {
+function WorkflowBadge({ step, isProcessing, isQueued, lastReplyCheckAt }: { step: string; isProcessing?: boolean; isQueued?: boolean; lastReplyCheckAt?: string | null }) {
+  // When queued, show "In Queue" with clock icon
+  if (isQueued) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+        <Clock className="w-3 h-3" />
+        In Queue
+      </span>
+    )
+  }
+
   // When processing, show "Working" with spinning arrows
   if (isProcessing) {
     return (
@@ -907,7 +927,7 @@ function Jobs() {
     queryFn: () => templatesApi.list(),
   })
 
-  // Check if there's a currently running job
+  // Check if there's a currently running job and queued jobs
   const { data: currentJobData } = useQuery({
     queryKey: ['current-job'],
     queryFn: () => jobsApi.getCurrent(),
@@ -916,6 +936,7 @@ function Jobs() {
 
   const isLinkedInLoggedIn = authStatus?.logged_in === true
   const currentRunningJobId = currentJobData?.job_id
+  const queuedJobIds: number[] = currentJobData?.queued_jobs || []
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => jobsApi.delete(id),
@@ -1001,7 +1022,7 @@ function Jobs() {
     },
   })
 
-  // Abort workflow mutation
+  // Abort workflow mutation (for aborting all)
   const abortMutation = useMutation({
     mutationFn: () => {
       setIsAborting(true)
@@ -1018,6 +1039,15 @@ function Jobs() {
     },
     onError: () => {
       setIsAborting(false)
+    },
+  })
+
+  // Abort specific job mutation (for aborting a single job - running or queued)
+  const abortJobMutation = useMutation({
+    mutationFn: (jobId: number) => jobsApi.abortJob(jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['current-job'] })
     },
   })
 
@@ -1175,8 +1205,8 @@ function Jobs() {
         <div className="flex items-center gap-2">
           {/* Run All Jobs Button with Filter */}
           <div className="flex items-center gap-1">
-            {/* Show Abort button when Run All is running or any job is processing */}
-            {(runAllMutation.isPending || currentRunningJobId || isRunningAll) ? (
+            {/* Show Abort button when Run All is running, any job is processing, or jobs are queued */}
+            {(runAllMutation.isPending || currentRunningJobId || isRunningAll || queuedJobIds.length > 0) ? (
               <button
                 onClick={() => abortMutation.mutate()}
                 disabled={isAborting}
@@ -1389,23 +1419,24 @@ function Jobs() {
                   <td className="px-4 py-3">
                     <StatusBadge
                       status={job.status}
-                      isWaiting={!!job.company_name && job.workflow_step !== 'done' && job.status !== 'processing' && job.status !== 'needs_input' && job.id !== currentRunningJobId}
+                      isWaiting={!!job.company_name && job.workflow_step !== 'done' && job.status !== 'processing' && job.status !== 'needs_input' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id)}
                       isProcessing={job.status === 'processing' || job.id === currentRunningJobId}
+                      isQueued={queuedJobIds.includes(job.id)}
                     />
-                    {job.error_message && job.status !== 'processing' && job.id !== currentRunningJobId && (
+                    {job.error_message && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
                       <p className="text-xs text-red-500 mt-1">{job.error_message}</p>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <WorkflowBadge step={job.workflow_step} isProcessing={job.status === 'processing' || job.id === currentRunningJobId} lastReplyCheckAt={job.last_reply_check_at} />
+                    <WorkflowBadge step={job.workflow_step} isProcessing={job.status === 'processing' || job.id === currentRunningJobId} isQueued={queuedJobIds.includes(job.id)} lastReplyCheckAt={job.last_reply_check_at} />
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {new Date(job.created_at).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-center gap-2">
-                      {/* Good/Bad buttons - always visible except when processing or already final */}
-                      {!isJobFinal && job.status !== 'processing' && job.id !== currentRunningJobId && (
+                      {/* Good/Bad buttons - always visible except when processing, queued, or already final */}
+                      {!isJobFinal && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
                         <>
                           <button
                             onClick={() => markDoneMutation.mutate(job.id)}
@@ -1451,18 +1482,18 @@ function Jobs() {
                               <Languages className="w-4 h-4" />
                             </button>
                           )}
-                          {/* Show Abort button when this job is currently running (processing status or currentRunningJobId) */}
-                          {(job.status === 'processing' || job.id === currentRunningJobId) && (
+                          {/* Show Abort button when this job is currently running or queued */}
+                          {(job.status === 'processing' || job.id === currentRunningJobId || queuedJobIds.includes(job.id)) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
-                                abortMutation.mutate()
+                                abortJobMutation.mutate(job.id)
                               }}
-                              disabled={isAborting}
+                              disabled={abortJobMutation.isPending}
                               className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
-                              title="Stop this workflow"
+                              title={queuedJobIds.includes(job.id) ? "Remove from queue" : "Stop this workflow"}
                             >
-                              {isAborting ? (
+                              {abortJobMutation.isPending ? (
                                 <Loader2 className="w-4 h-4 animate-spin" />
                               ) : (
                                 <StopCircle className="w-4 h-4" />
@@ -1470,7 +1501,7 @@ function Jobs() {
                             </button>
                           )}
                           {/* Show Users button for jobs waiting for reply (not waiting_for_accept) */}
-                          {job.workflow_step === 'waiting_for_reply' && job.status !== 'processing' && job.id !== currentRunningJobId && (
+                          {job.workflow_step === 'waiting_for_reply' && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
                             <button
                               onClick={() => setWaitingContactsJob(job)}
                               className="p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded"
@@ -1480,7 +1511,7 @@ function Jobs() {
                             </button>
                           )}
                           {/* Show Check Replies button for jobs waiting for reply only */}
-                          {job.status !== 'processing' && job.id !== currentRunningJobId && job.company_name &&
+                          {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && job.company_name &&
                            job.workflow_step === 'waiting_for_reply' && (
                             !isLinkedInLoggedIn ? (
                               <button
@@ -1512,7 +1543,7 @@ function Jobs() {
                             )
                           )}
                           {/* Show Check Accepts button for jobs waiting for accept only */}
-                          {job.status !== 'processing' && job.id !== currentRunningJobId && job.company_name &&
+                          {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && job.company_name &&
                            job.workflow_step === 'waiting_for_accept' && (
                             !isLinkedInLoggedIn ? (
                               <button
@@ -1534,7 +1565,7 @@ function Jobs() {
                             )
                           )}
                           {/* Resume button for failed/aborted jobs - resumes from where it left off */}
-                          {job.status !== 'processing' && job.id !== currentRunningJobId && (job.status === 'failed' || job.status === 'aborted') && job.company_name && job.workflow_step !== 'company_extraction' && (
+                          {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (job.status === 'failed' || job.status === 'aborted') && job.company_name && job.workflow_step !== 'company_extraction' && (
                             <button
                               onClick={() => retryMutation.mutate(job.id)}
                               disabled={retryMutation.isPending}
@@ -1545,7 +1576,7 @@ function Jobs() {
                             </button>
                           )}
                           {/* Show Play button for completed jobs that have company_name */}
-                          {job.status !== 'processing' && job.id !== currentRunningJobId && job.status === 'completed' && job.company_name && job.workflow_step !== 'done' && job.workflow_step !== 'waiting_for_accept' && job.workflow_step !== 'waiting_for_reply' && (
+                          {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && job.status === 'completed' && job.company_name && job.workflow_step !== 'done' && job.workflow_step !== 'waiting_for_accept' && job.workflow_step !== 'waiting_for_reply' && (
                             !isLinkedInLoggedIn ? (
                               <button
                                 onClick={() => setShowLoginModal(true)}
@@ -1574,7 +1605,7 @@ function Jobs() {
                             )
                           )}
                           {/* Show Re-search button for jobs that have already sent connection requests (waiting_for_accept) */}
-                          {job.status !== 'processing' && job.id !== currentRunningJobId && job.status === 'completed' && job.company_name && job.workflow_step === 'waiting_for_accept' && (
+                          {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && job.status === 'completed' && job.company_name && job.workflow_step === 'waiting_for_accept' && (
                             !isLinkedInLoggedIn ? (
                               <button
                                 onClick={() => setShowLoginModal(true)}
@@ -1603,7 +1634,7 @@ function Jobs() {
                             )
                           )}
                           {/* Buttons for completed jobs (workflow_step === 'done') - but not status done/rejected */}
-                          {job.workflow_step === 'done' && job.status !== 'processing' && job.id !== currentRunningJobId && job.status === 'completed' && (
+                          {job.workflow_step === 'done' && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && job.status === 'completed' && (
                             <>
                               {/* Find More - search for other people (remove replier) */}
                               <button
@@ -1626,7 +1657,7 @@ function Jobs() {
                             </>
                           )}
                           {/* Retry button: for failed/aborted jobs without company (needs company extraction retry) */}
-                          {(job.status === 'failed' || job.status === 'aborted') && !job.company_name && (
+                          {(job.status === 'failed' || job.status === 'aborted') && !job.company_name && !queuedJobIds.includes(job.id) && (
                             <button
                               onClick={() => retryMutation.mutate(job.id)}
                               disabled={retryMutation.isPending}

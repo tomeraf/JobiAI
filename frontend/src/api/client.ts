@@ -24,6 +24,9 @@ export const jobsApi = {
   retry: (id: number) =>
     api.post(`/jobs/${id}/retry`).then(res => res.data),
 
+  retryJob: (id: number) =>
+    api.post(`/jobs/${id}/retry`).then(res => res.data),
+
   submitCompany: (
     id: number,
     companyName: string,
@@ -56,6 +59,9 @@ export const jobsApi = {
 
   abort: () =>
     api.post('/jobs/abort').then(res => res.data),
+
+  abortJob: (id: number) =>
+    api.post(`/jobs/abort/${id}`).then(res => res.data),
 
   getCurrent: () =>
     api.get('/jobs/current').then(res => res.data),
