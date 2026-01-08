@@ -12,9 +12,9 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":9000" ^| findstr "LISTENING
 )
 echo [OK] Backend stopped
 
-:: Kill Frontend (Node/Vite on port 3000)
-echo [2/3] Stopping Frontend (port 3000)...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING"') do (
+:: Kill Frontend (Node/Vite on port 5173)
+echo [2/3] Stopping Frontend (port 5173)...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do (
     taskkill /F /T /PID %%p >nul 2>&1
 )
 echo [OK] Frontend stopped

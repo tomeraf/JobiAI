@@ -86,6 +86,9 @@ export const jobsApi = {
 
   markRejected: (id: number) =>
     api.post(`/jobs/${id}/mark-rejected`).then(res => res.data),
+
+  updateWorkflowStep: (id: number, workflowStep: string, status?: string) =>
+    api.put(`/jobs/${id}/workflow-step`, { workflow_step: workflowStep, status }).then(res => res.data),
 }
 
 // Templates API

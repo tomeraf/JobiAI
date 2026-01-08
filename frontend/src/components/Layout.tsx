@@ -1,7 +1,6 @@
 import { Outlet, NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard,
   Briefcase,
   MessageSquare,
   ScrollText,
@@ -9,14 +8,15 @@ import {
   Linkedin,
   CheckCircle,
   XCircle,
+  BarChart3,
 } from 'lucide-react'
 import { authApi } from '../api/client'
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/jobs', icon: Briefcase, label: 'Jobs' },
+  { to: '/', icon: Briefcase, label: 'Jobs' },
   { to: '/templates', icon: MessageSquare, label: 'Templates' },
   { to: '/logs', icon: ScrollText, label: 'Activity Logs' },
+  { to: '/stats', icon: BarChart3, label: 'Stats' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 

@@ -150,8 +150,10 @@ async def abort_workflow(db: AsyncSession = Depends(get_db)):
 
     This will:
     1. Signal the LinkedIn client to stop
-    2. Set the job status to ABORTED
-    3. Clear all queued jobs
+    2. Clear all queued jobs
+
+    Note: The workflow orchestrator handles restoring the job's previous state
+    when it catches the abort signal. We don't set status here to avoid race conditions.
     """
     client = LinkedInClient.get_instance()
     current_job_id = client.get_current_job()
@@ -168,17 +170,8 @@ async def abort_workflow(db: AsyncSession = Depends(get_db)):
         )
 
     if current_job_id:
-        # Request abort for running job
+        # Request abort for running job - orchestrator will handle state restoration
         client.request_abort(current_job_id)
-
-        # Update job status immediately
-        result = await db.execute(select(Job).where(Job.id == current_job_id))
-        job = result.scalar_one_or_none()
-
-        if job:
-            job.status = JobStatus.ABORTED
-            job.error_message = "Workflow aborted by user"
-            await db.commit()
 
     return AbortResponse(
         success=True,
@@ -194,6 +187,9 @@ async def abort_specific_job(job_id: int, db: AsyncSession = Depends(get_db)):
 
     If the job is currently running, it sends an abort signal.
     If the job is queued, it removes it from the queue.
+
+    Note: The workflow orchestrator handles restoring the job's previous state
+    when it catches the abort signal. We don't set status here to avoid race conditions.
     """
     client = LinkedInClient.get_instance()
     current_job_id = client.get_current_job()
@@ -201,13 +197,8 @@ async def abort_specific_job(job_id: int, db: AsyncSession = Depends(get_db)):
 
     # Check if this job is currently running
     if current_job_id == job_id:
+        # Request abort - orchestrator will handle state restoration
         client.request_abort(job_id)
-        result = await db.execute(select(Job).where(Job.id == job_id))
-        job = result.scalar_one_or_none()
-        if job:
-            job.status = JobStatus.ABORTED
-            job.error_message = "Workflow aborted by user"
-            await db.commit()
         return AbortResponse(
             success=True,
             message="Abort signal sent. Workflow will stop at next checkpoint.",
@@ -1094,5 +1085,84 @@ async def mark_job_rejected(
     await db.refresh(job)
 
     logger.info(f"Job {job_id} marked as rejected by user")
+
+    return job
+
+
+class UpdateWorkflowStepRequest(BaseModel):
+    """Request body for updating workflow step."""
+    workflow_step: str
+    status: str | None = None  # Optional - also update status
+
+
+@router.put("/{job_id}/workflow-step", response_model=JobResponse)
+async def update_workflow_step(
+    job_id: int,
+    data: UpdateWorkflowStepRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually update the workflow step for a job.
+
+    This is useful for correcting the workflow state or skipping steps.
+    Optionally also updates the status.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == JobStatus.PROCESSING:
+        raise HTTPException(status_code=400, detail="Cannot update a job that is currently processing")
+
+    # Validate workflow step
+    try:
+        new_step = WorkflowStep(data.workflow_step)
+    except ValueError:
+        valid_steps = [s.value for s in WorkflowStep]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid workflow step: {data.workflow_step}. Valid values: {valid_steps}"
+        )
+
+    old_step = job.workflow_step
+    old_status = job.status
+    job.workflow_step = new_step
+
+    # Optionally update status
+    if data.status:
+        try:
+            new_status = JobStatus(data.status)
+            job.status = new_status
+        except ValueError:
+            valid_statuses = [s.value for s in JobStatus]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status: {data.status}. Valid values: {valid_statuses}"
+            )
+
+    # Clear error message when manually changing state
+    job.error_message = None
+
+    # Log activity
+    activity = ActivityLog(
+        action_type=ActionType.JOB_SUBMITTED,
+        description=f"Workflow step manually changed from '{old_step.value}' to '{new_step.value}'",
+        details={
+            "job_id": job_id,
+            "old_step": old_step.value,
+            "new_step": new_step.value,
+            "old_status": old_status.value,
+            "new_status": job.status.value,
+        },
+        job_id=job.id,
+    )
+    db.add(activity)
+
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Job {job_id} workflow step manually changed: {old_step.value} -> {new_step.value}")
 
     return job

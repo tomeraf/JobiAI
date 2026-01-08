@@ -27,6 +27,7 @@ import {
   UserPlus,
   Pencil,
   Check,
+  Settings,
 } from 'lucide-react'
 import { jobsApi, authApi, templatesApi } from '../api/client'
 import { useNavigate } from 'react-router-dom'
@@ -736,6 +737,102 @@ function EditCompanyModal({
   )
 }
 
+function WorkflowStepModal({
+  job,
+  onClose,
+  onSubmit,
+  isPending,
+}: {
+  job: Job
+  onClose: () => void
+  onSubmit: (workflowStep: string) => void
+  isPending: boolean
+}) {
+  const [selectedStep, setSelectedStep] = useState(job.workflow_step)
+
+  const workflowSteps = [
+    { value: 'search_connections', label: 'Ready', description: 'Ready to search for connections' },
+    { value: 'waiting_for_reply', label: 'Waiting for Reply', description: 'Messages sent, awaiting reply' },
+    { value: 'waiting_for_accept', label: 'Waiting for Accept', description: 'Requests sent, awaiting accepts' },
+    { value: 'done', label: 'Done', description: 'Workflow complete - got a reply' },
+  ]
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSubmit(selectedStep)
+  }
+
+  const hasChanges = selectedStep !== job.workflow_step
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="text-lg font-semibold flex items-center gap-2">
+            <Settings className="w-5 h-5 text-gray-500" />
+            Change Workflow Step
+          </h3>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-gray-100 rounded"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4">
+          <p className="text-sm text-gray-600 mb-4">
+            Change the workflow step for <strong>{job.company_name || 'this job'}</strong>.
+          </p>
+
+          {/* Workflow Step */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Workflow Step
+            </label>
+            <select
+              value={selectedStep}
+              onChange={e => setSelectedStep(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {workflowSteps.map(step => (
+                <option key={step.value} value={step.value}>
+                  {step.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              {workflowSteps.find(s => s.value === selectedStep)?.description}
+            </p>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isPending || !hasChanges}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <CheckCircle className="w-4 h-4" />
+              )}
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function WaitingContactsModal({
   job,
   onClose,
@@ -901,6 +998,7 @@ function Jobs() {
   const [hebrewNamesJob, setHebrewNamesJob] = useState<Job | null>(null)
   const [waitingContactsJob, setWaitingContactsJob] = useState<Job | null>(null)
   const [editCompanyJob, setEditCompanyJob] = useState<Job | null>(null)
+  const [workflowStepJob, setWorkflowStepJob] = useState<Job | null>(null)
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [showNoTemplateModal, setShowNoTemplateModal] = useState(false)
   const [isAborting, setIsAborting] = useState(false)
@@ -1064,6 +1162,16 @@ function Jobs() {
     mutationFn: (id: number) => jobsApi.markRejected(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    },
+  })
+
+  // Update workflow step mutation
+  const updateWorkflowStepMutation = useMutation({
+    mutationFn: ({ id, workflowStep }: { id: number; workflowStep: string }) =>
+      jobsApi.updateWorkflowStep(id, workflowStep),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      setWorkflowStepJob(null)
     },
   })
 
@@ -1428,7 +1536,19 @@ function Jobs() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <WorkflowBadge step={job.workflow_step} isProcessing={job.status === 'processing' || job.id === currentRunningJobId} isQueued={queuedJobIds.includes(job.id)} lastReplyCheckAt={job.last_reply_check_at} />
+                    <div className="flex items-center gap-1 group">
+                      <WorkflowBadge step={job.workflow_step} isProcessing={job.status === 'processing' || job.id === currentRunningJobId} isQueued={queuedJobIds.includes(job.id)} lastReplyCheckAt={job.last_reply_check_at} />
+                      {/* Settings icon to change workflow step - appears on hover, hidden when processing/queued */}
+                      {job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
+                        <button
+                          onClick={() => setWorkflowStepJob(job)}
+                          className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Change workflow state"
+                        >
+                          <Settings className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {new Date(job.created_at).toLocaleDateString()}
@@ -1768,6 +1888,21 @@ function Jobs() {
             })
           }
           isPending={updateCompanyMutation.isPending}
+        />
+      )}
+
+      {/* Workflow Step Modal */}
+      {workflowStepJob && (
+        <WorkflowStepModal
+          job={workflowStepJob}
+          onClose={() => setWorkflowStepJob(null)}
+          onSubmit={(workflowStep) =>
+            updateWorkflowStepMutation.mutate({
+              id: workflowStepJob.id,
+              workflowStep,
+            })
+          }
+          isPending={updateWorkflowStepMutation.isPending}
         />
       )}
     </div>

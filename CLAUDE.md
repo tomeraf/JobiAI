@@ -8,7 +8,7 @@
 - **Restart with**: `restart-dev.bat` (stops and starts all services)
 - **The app runs in CMD windows** - check these for live errors/logs when debugging
 - **Backend port**: 9000 (local uvicorn)
-- **Frontend port**: 3000 (local Vite)
+- **Frontend port**: 5173 (local Vite)
 
 ## Project Overview
 A bot that helps users apply for jobs by leveraging LinkedIn connections. Users submit job URLs through a web app, and the bot automatically finds and contacts relevant people at the target company.

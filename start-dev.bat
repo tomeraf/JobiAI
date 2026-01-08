@@ -98,7 +98,7 @@ timeout /t 3 /nobreak >nul
 
 :: Start Frontend (minimized)
 echo.
-echo [4/4] Starting Frontend (Vite on port 3000)...
+echo [4/4] Starting Frontend (Vite on port 5173)...
 cd /d %~dp0frontend
 if not exist "node_modules" (
     echo Installing frontend dependencies...
@@ -114,7 +114,7 @@ echo ========================================
 echo    All services started successfully!
 echo ========================================
 echo.
-echo    Frontend: http://localhost:3000
+echo    Frontend: http://localhost:5173
 echo    Backend:  http://localhost:9000
 echo    API Docs: http://localhost:9000/docs
 echo    Database: localhost:5436
@@ -122,4 +122,4 @@ echo.
 echo    To stop: run stop-dev.bat
 echo.
 echo Opening frontend in browser...
-start "" "http://localhost:3000"
+start "" "http://localhost:5173"
