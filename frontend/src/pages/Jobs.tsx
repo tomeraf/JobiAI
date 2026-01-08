@@ -1627,12 +1627,12 @@ function Jobs() {
                               )}
                             </button>
                           )}
-                          {/* Show Users button for jobs waiting for reply (not waiting_for_accept) */}
-                          {job.workflow_step === 'waiting_for_reply' && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
+                          {/* Show Users button for jobs waiting for reply or completed (to view contacts) */}
+                          {(job.workflow_step === 'waiting_for_reply' || job.workflow_step === 'done') && job.status !== 'processing' && job.id !== currentRunningJobId && !queuedJobIds.includes(job.id) && (
                             <button
                               onClick={() => setWaitingContactsJob(job)}
-                              className="p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded"
-                              title="View contacts we're waiting on"
+                              className={`p-2 rounded ${job.workflow_step === 'done' ? 'text-green-500 hover:text-green-700 hover:bg-green-50' : 'text-amber-500 hover:text-amber-700 hover:bg-amber-50'}`}
+                              title={job.workflow_step === 'done' ? 'View contacts' : 'View contacts we\'re waiting on'}
                             >
                               <Users className="w-4 h-4" />
                             </button>
