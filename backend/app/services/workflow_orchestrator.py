@@ -100,10 +100,10 @@ class WorkflowOrchestrator:
 
         except WorkflowAbortedException:
             logger.info(f"Workflow aborted by user for job {job_id}, restoring previous state")
-            # Restore previous state and workflow step, but show abort message
+            # Restore previous state and workflow step (no error message - user intentionally aborted)
             job.status = previous_status
             job.workflow_step = previous_workflow_step
-            job.error_message = "Aborted by user"
+            job.error_message = None  # Clear any previous error message
 
             return {"success": False, "error": "Workflow aborted by user", "aborted": True}
 

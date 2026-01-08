@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy import select
@@ -366,9 +367,10 @@ async def retry_job(
         return {"message": "Job queued for retry (company extraction)"}
     else:
         # Company already extracted - resume workflow from current step
-        job.status = JobStatus.PROCESSING
         await db.commit()
-        # Run workflow - it will resume from current workflow_step
+        # Add to queue and run workflow - it will resume from current workflow_step
+        client = LinkedInClient.get_instance()
+        client.add_to_queue(job_id)
         background_tasks.add_task(run_workflow_task, job_id)
         return {"message": f"Job resuming from step: {job.workflow_step.value}"}
 
@@ -475,23 +477,47 @@ async def run_workflow_task(job_id: int, template_id: int | None = None, force_s
     """Background task to run the full workflow."""
     client = LinkedInClient.get_instance()
 
-    # Remove from queue when starting (it was added when workflow was triggered)
+    # Wait for our turn - only one workflow can run at a time
+    # Poll until no other job is running and we're first in queue
+    while True:
+        current_job = client.get_current_job()
+        queued_jobs = client.get_queued_jobs()
+
+        # Check if we were removed from the queue (user aborted this job)
+        if job_id not in queued_jobs:
+            logger.info(f"Job {job_id} was removed from queue, exiting")
+            return
+
+        # If no job is running and we're first in queue, we can start
+        if current_job is None and queued_jobs and queued_jobs[0] == job_id:
+            break
+
+        # Wait a bit before checking again
+        await asyncio.sleep(0.5)
+
+    # Now it's our turn - remove from queue and set as current
     client.remove_from_queue(job_id)
+    client.set_current_job(job_id)
 
     logger.info(f"Starting workflow task for job {job_id} (force_search={force_search}, first_degree_only={first_degree_only})")
     orchestrator = None
-    async with AsyncSessionLocal() as db:
-        try:
-            orchestrator = WorkflowOrchestrator(db)
-            result = await orchestrator.run_workflow(job_id, template_id, force_search=force_search, first_degree_only=first_degree_only)
-            logger.info(f"Workflow result for job {job_id}: {result}")
-            await db.commit()
-        except Exception as e:
-            logger.error(f"Workflow task failed for job {job_id}: {e}", exc_info=True)
-            await db.rollback()
-        finally:
-            if orchestrator:
-                await orchestrator.close()
+    try:
+        async with AsyncSessionLocal() as db:
+            try:
+                orchestrator = WorkflowOrchestrator(db)
+                result = await orchestrator.run_workflow(job_id, template_id, force_search=force_search, first_degree_only=first_degree_only)
+                logger.info(f"Workflow result for job {job_id}: {result}")
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Workflow task failed for job {job_id}: {e}", exc_info=True)
+                await db.rollback()
+            finally:
+                if orchestrator:
+                    await orchestrator.close()
+    finally:
+        # Always clear current job when done, so next queued job can run
+        client.set_current_job(None)
+        client.clear_abort()  # Clear any abort signal for the next job
 
 
 @router.post("/{job_id}/workflow", response_model=WorkflowResponse)
@@ -717,13 +743,15 @@ async def submit_hebrew_names(
 
     # All names provided - update job state to show it's resuming
     # This ensures the UI shows normal state (white row) before workflow continues
-    job.status = JobStatus.PROCESSING
+    job.status = JobStatus.COMPLETED  # Set to COMPLETED, not PROCESSING - the background task will set PROCESSING
     job.pending_hebrew_names = None  # Clear pending names (translations are now saved)
     # Keep workflow_step as NEEDS_HEBREW_NAMES - the orchestrator will update it when it resumes
 
     await db.commit()  # Save the Hebrew names and updated job state
 
-    # Run workflow in background (will resume from NEEDS_HEBREW_NAMES step)
+    # Add to queue and run workflow in background (will resume from NEEDS_HEBREW_NAMES step)
+    client = LinkedInClient.get_instance()
+    client.add_to_queue(job_id)
     background_tasks.add_task(run_workflow_task, job_id)
 
     # Refresh job to return updated state
@@ -916,6 +944,8 @@ async def find_more_replies(
 
     # Always trigger workflow - if there are other contacts, it will check for replies
     # If no other contacts, it will search for new people
+    client = LinkedInClient.get_instance()
+    client.add_to_queue(job_id)
     background_tasks.add_task(run_workflow_task, job_id, None, True)  # force_search=True
 
     return job

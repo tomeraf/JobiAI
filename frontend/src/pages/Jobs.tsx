@@ -1029,7 +1029,7 @@ function Jobs() {
   const { data: currentJobData } = useQuery({
     queryKey: ['current-job'],
     queryFn: () => jobsApi.getCurrent(),
-    refetchInterval: 2000, // Poll every 2 seconds when workflow is running
+    refetchInterval: 1000, // Poll every 1 second for responsive queue updates
   })
 
   const isLinkedInLoggedIn = authStatus?.logged_in === true
@@ -1284,10 +1284,13 @@ function Jobs() {
             await jobsApi.triggerWorkflow(job.id, defaultTemplate.id, true)
             break
         }
+        // Invalidate current-job query after each trigger so UI shows queued jobs immediately
+        queryClient.invalidateQueries({ queryKey: ['current-job'] })
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      queryClient.invalidateQueries({ queryKey: ['current-job'] })
       // Don't reset isRunningAll here - wait for jobs to actually finish
     },
     onError: () => {
@@ -1447,6 +1450,7 @@ function Jobs() {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-100">
               <tr>
+                <th className="text-left px-4 py-3 text-sm font-medium text-gray-500 w-12">#</th>
                 <th className="text-left px-4 py-3 text-sm font-medium text-gray-500">Company</th>
                 <th className="text-left px-4 py-3 text-sm font-medium text-gray-500">URL</th>
                 <th className="text-left px-4 py-3 text-sm font-medium text-gray-500">Status</th>
@@ -1476,6 +1480,9 @@ function Jobs() {
 
                 return (
                 <tr key={job.id} className={rowBgClass}>
+                  <td className="px-4 py-3 text-sm text-gray-400 font-mono">
+                    {job.id}
+                  </td>
                   <td className="px-4 py-3">
                     {job.workflow_step === 'needs_hebrew_names' && job.status === 'needs_input' ? (
                       <button
