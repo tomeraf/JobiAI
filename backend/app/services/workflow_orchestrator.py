@@ -167,12 +167,41 @@ class WorkflowOrchestrator:
                     translated = translate_name_to_hebrew_sync(first_name)
                     if translated:
                         first_name = translated
+                    else:
+                        # Hebrew translation needed but not available - raise exception
+                        raise MissingHebrewNamesException(
+                            missing_names=[first_name],
+                            first_degree_found=[]
+                        )
                 return template.format_message(name=first_name, company=company_name)
 
             # Re-run search with message generator to send messages
-            search_results = await self.search.search_company_all_degrees(
-                company, limit=15, message_generator=create_message
-            )
+            try:
+                search_results = await self.search.search_company_all_degrees(
+                    company, limit=15, message_generator=create_message
+                )
+            except MissingHebrewNamesException as e:
+                # Another Hebrew name translation missing - pause workflow for user input
+                logger.info(f"Missing Hebrew translation for: {e.missing_names}")
+
+                job.workflow_step = WorkflowStep.NEEDS_HEBREW_NAMES
+                job.status = JobStatus.NEEDS_INPUT
+                job.pending_hebrew_names = e.missing_names
+
+                await self._log_activity(
+                    ActionType.COMPANY_INPUT_NEEDED,
+                    f"Hebrew name translation needed for: {e.missing_names[0]}",
+                    {"missing_names": e.missing_names, "company": company},
+                    job_id=job.id,
+                )
+
+                await self.db.flush()
+
+                results["steps_completed"].append("message_connections")
+                results["needs_hebrew_names"] = e.missing_names
+                results["success"] = True  # Not a failure, just paused
+
+                return results
 
             messages_sent = search_results.get("messages_sent", [])
             second_degree = search_results.get("second_degree", [])
