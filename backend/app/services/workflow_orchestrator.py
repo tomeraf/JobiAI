@@ -280,6 +280,14 @@ class WorkflowOrchestrator:
                     results["success"] = True
                     results["steps_completed"].append("reply_received")
                     return results
+                elif reply_result.get("check_failed"):
+                    # Some contacts couldn't be checked - show error to user
+                    job.status = JobStatus.COMPLETED  # Not failed, just couldn't check
+                    job.error_message = reply_result.get("error", "Could not check some conversations")
+                    results["success"] = False
+                    results["error"] = job.error_message
+                    results["steps_completed"].append("check_replies_failed")
+                    return results
                 else:
                     # No reply yet - stay in waiting state
                     job.status = JobStatus.COMPLETED  # Not failed, just waiting
@@ -829,7 +837,10 @@ class WorkflowOrchestrator:
         logger.info(f"Checking {len(contacts_data)} contacts for replies")
 
         # Check for replies using LinkedIn client
-        replied = await self.client.check_for_replies(contacts_data, job.company_name)
+        result = await self.client.check_for_replies(contacts_data, job.company_name)
+
+        replied = result.get("replied_contacts", [])
+        failed = result.get("failed_contacts", [])
 
         if replied:
             # Mark the contacts that replied
@@ -848,6 +859,17 @@ class WorkflowOrchestrator:
                         break
 
             return {"reply_received": True, "replied_contacts": replied}
+
+        # If some contacts failed to check, report that to the user
+        if failed:
+            failed_names = [f.get("name", "Unknown") for f in failed]
+            logger.warning(f"Failed to check replies from: {failed_names}")
+            return {
+                "reply_received": False,
+                "check_failed": True,
+                "failed_contacts": failed,
+                "error": f"Could not check replies from: {', '.join(failed_names)}. LinkedIn was unresponsive. Please try again."
+            }
 
         return {"reply_received": False}
 

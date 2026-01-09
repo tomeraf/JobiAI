@@ -2776,7 +2776,7 @@ class LinkedInClient:
                 logger.error(f"Failed to send connection request: {e}")
                 return False
 
-    async def check_for_replies(self, contacts: list[dict], company: str) -> list[dict]:
+    async def check_for_replies(self, contacts: list[dict], company: str) -> dict:
         """
         Check if any of the contacts we messaged have replied.
 
@@ -2785,24 +2785,27 @@ class LinkedInClient:
             company: Company name for context
 
         Returns:
-            List of contacts who have replied
+            Dict with:
+                - replied_contacts: List of contacts who have replied
+                - failed_contacts: List of contacts we couldn't check (timeout/error)
         """
         if not self._logged_in:
             logger.error("Not logged in")
-            return []
+            return {"replied_contacts": [], "failed_contacts": []}
 
         if not contacts:
             logger.info("No contacts to check for replies")
-            return []
+            return {"replied_contacts": [], "failed_contacts": []}
 
         return await _run_playwright_async(self._check_for_replies_sync, contacts, company)
 
-    def _check_for_replies_sync(self, contacts: list[dict], company: str) -> list[dict]:
+    def _check_for_replies_sync(self, contacts: list[dict], company: str) -> dict:
         """Synchronous version of check_for_replies."""
         if not HAS_PLAYWRIGHT:
-            return []
+            return {"replied_contacts": [], "failed_contacts": []}
 
         replied_contacts = []
+        failed_contacts = []
 
         with sync_playwright() as p:
             context = None
@@ -3241,16 +3244,92 @@ class LinkedInClient:
                     except WorkflowAbortedException:
                         raise
                     except Exception as e:
-                        logger.warning(f"Error checking reply from {name}: {e}")
+                        error_str = str(e)
+                        logger.warning(f"Error checking reply from {name}: {error_str}")
+
+                        # If it's a timeout, try one more time with longer wait
+                        if "Timeout" in error_str:
+                            logger.info(f"Retrying reply check for {name} after timeout...")
+                            try:
+                                # Close any stuck dialogs
+                                page.keyboard.press("Escape")
+                                page.wait_for_timeout(500)
+                                self._close_all_message_overlays(page)
+                                page.wait_for_timeout(1000)
+
+                                # Re-search for the conversation
+                                for search_selector in search_selectors:
+                                    try:
+                                        search_input = page.query_selector(search_selector)
+                                        if search_input:
+                                            search_input.fill("")
+                                            page.wait_for_timeout(300)
+                                            search_input.fill(name)
+                                            page.wait_for_timeout(2000)  # Longer wait for retry
+                                            break
+                                    except:
+                                        continue
+
+                                # Try to find and click conversation again
+                                for selector in conversation_selectors:
+                                    try:
+                                        conversation = page.query_selector(selector)
+                                        if conversation:
+                                            conversation.click()
+                                            page.wait_for_timeout(3000)  # Longer wait for retry
+                                            break
+                                    except:
+                                        continue
+
+                                # Check if conversation opened this time
+                                retry_opened = False
+                                for selector in convo_bubble_selectors:
+                                    try:
+                                        if page.query_selector(selector):
+                                            retry_opened = True
+                                            logger.info(f"Retry successful: conversation opened for {name}")
+                                            break
+                                    except:
+                                        continue
+
+                                if retry_opened:
+                                    # Try to check for reply
+                                    retry_result = page.evaluate("""
+                                        () => {
+                                            const bubble = document.querySelector('.msg-overlay-conversation-bubble') ||
+                                                           document.querySelector('.msg-convo-wrapper') ||
+                                                           document.querySelector('.msg-s-message-list');
+                                            if (!bubble) return { found: false };
+
+                                            const messageItems = bubble.querySelectorAll('.msg-s-message-list__event');
+                                            return { found: true, messageCount: messageItems.length };
+                                        }
+                                    """)
+
+                                    if retry_result.get("found"):
+                                        logger.info(f"Retry: Found {retry_result.get('messageCount', 0)} messages for {name}")
+                                        # Close the conversation
+                                        page.keyboard.press("Escape")
+                                        page.wait_for_timeout(500)
+                                        continue  # Successfully checked (no reply detected in simple check)
+
+                            except Exception as retry_error:
+                                logger.warning(f"Retry also failed for {name}: {retry_error}")
+
+                        # Add to failed contacts list
+                        failed_contacts.append({
+                            "name": name,
+                            "error": error_str[:100]  # Truncate long errors
+                        })
                         continue
 
-                return replied_contacts
+                return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
 
             except WorkflowAbortedException:
                 raise
             except Exception as e:
                 logger.error(f"Error checking for replies: {e}")
-                return replied_contacts
+                return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
 
             finally:
                 # ALWAYS close the browser
