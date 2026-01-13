@@ -70,6 +70,10 @@ build/
 # Accidental files
 nul
 
+# Dynamic port configuration (runtime only)
+.ports.json
+docker-compose.override.yml
+
 # Claude Code / AI assistant settings
 .claude/
 .claude.json

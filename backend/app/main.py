@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import jobs, templates, selectors, logs, auth, hebrew_names
 from app.utils.logger import get_logger
+from app.utils.port_finder import get_dynamic_cors_origins
 
 logger = get_logger(__name__)
 
@@ -13,10 +14,13 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
-# CORS middleware for frontend
+# CORS middleware for frontend - dynamically configured
+cors_origins = get_dynamic_cors_origins()
+logger.info(f"CORS enabled for origins: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

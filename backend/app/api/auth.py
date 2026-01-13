@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.services.linkedin.auth import LinkedInAuth
+from app.services.linkedin.client import LinkedInClient, get_linkedin_client
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,13 +23,13 @@ class LoginRequest(BaseModel):
 @router.get("/status", response_model=AuthStatus)
 async def check_auth_status():
     """Check if we have a valid LinkedIn session."""
-    auth = LinkedInAuth()
+    client = get_linkedin_client()
 
     try:
-        is_logged_in = await auth.check_session()
+        is_logged_in = await client.check_session()
 
         if is_logged_in:
-            profile = await auth.get_profile_info()
+            profile = await client.get_profile_info()
             return AuthStatus(
                 logged_in=True,
                 name=profile.get("name"),
@@ -39,46 +39,13 @@ async def check_auth_status():
         else:
             return AuthStatus(
                 logged_in=False,
-                message="Not logged in to LinkedIn. Use /api/auth/login with email and password.",
+                message="Not logged in to LinkedIn. Use /api/auth/login-browser to login.",
             )
     except Exception as e:
         logger.error(f"Error checking auth status: {e}")
         return AuthStatus(
             logged_in=False,
             message=f"Error checking session: {str(e)}",
-        )
-
-
-@router.post("/login", response_model=AuthStatus)
-async def start_login(request: LoginRequest):
-    """
-    Login to LinkedIn with email and password.
-    Credentials will be saved for future use.
-    """
-    auth = LinkedInAuth()
-
-    try:
-        logger.info(f"Starting LinkedIn login for: {request.email}")
-        success = await auth.login(request.email, request.password)
-
-        if success:
-            profile = await auth.get_profile_info()
-            return AuthStatus(
-                logged_in=True,
-                name=profile.get("name"),
-                email=profile.get("email"),
-                message="Successfully logged in to LinkedIn!",
-            )
-        else:
-            return AuthStatus(
-                logged_in=False,
-                message="Login failed. Please check your credentials.",
-            )
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Login failed: {str(e)}",
         )
 
 
@@ -90,19 +57,19 @@ async def login_with_browser():
     This will open a browser, let you login manually,
     then capture and save the cookies for future API use.
     """
-    auth = LinkedInAuth()
+    client = get_linkedin_client()
 
     try:
         logger.info("Starting browser login flow...")
-        success = await auth.login_with_browser()
+        success = await client.login_with_browser()
 
         if success:
-            profile = await auth.get_profile_info()
+            profile = await client.get_profile_info()
             return AuthStatus(
                 logged_in=True,
                 name=profile.get("name"),
                 email=profile.get("email"),
-                message="Successfully logged in! Cookies saved for future use.",
+                message="Successfully logged in! Session saved for future use.",
             )
         else:
             return AuthStatus(
@@ -119,11 +86,11 @@ async def login_with_browser():
 
 @router.post("/logout")
 async def logout():
-    """Clear saved LinkedIn session and credentials."""
-    auth = LinkedInAuth()
+    """Clear saved LinkedIn session."""
+    client = get_linkedin_client()
 
     try:
-        await auth.clear_session()
+        await client.logout()
         return {"message": "LinkedIn session cleared"}
     except Exception as e:
         logger.error(f"Logout error: {e}")

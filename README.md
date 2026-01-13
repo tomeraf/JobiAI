@@ -167,10 +167,12 @@ JobiAI/
 │   │   │   ├── hebrew_names.py       # Name translation service
 │   │   │   ├── job_parser.py         # URL parsing
 │   │   │   └── linkedin/
-│   │   │       ├── client.py         # Playwright browser automation
-│   │   │       ├── search.py         # LinkedIn search wrapper
-│   │   │       ├── messaging.py      # Direct messaging
-│   │   │       └── connections.py    # Connection requests
+│   │   │       ├── client.py         # Main Playwright automation (singleton)
+│   │   │       ├── selectors.py      # CSS selectors for LinkedIn
+│   │   │       ├── extractors.py     # Person data extraction
+│   │   │       ├── browser_utils.py  # Browser context & helpers
+│   │   │       ├── vip_filter.py     # VIP title detection
+│   │   │       └── js_scripts.py     # JavaScript evaluation strings
 │   │   └── utils/
 │   │       └── logger.py     # Logging utilities
 │   ├── alembic/              # Database migrations

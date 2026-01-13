@@ -9,8 +9,8 @@ services:
       POSTGRES_DB: jobiai
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5436:5432"  # Use 5436 externally to avoid conflict with local PostgreSQL
+    # Port is set dynamically via docker-compose.override.yml
+    # Default: 5436:5432 (but override will specify the actual port)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s

@@ -17,9 +17,6 @@ from app.models.job import Job, JobStatus, WorkflowStep
 from app.models.contact import Contact
 from app.models.template import Template
 from app.models.activity import ActivityLog, ActionType
-from app.services.linkedin.search import LinkedInSearch
-from app.services.linkedin.messaging import LinkedInMessaging
-from app.services.linkedin.connections import LinkedInConnections
 from app.services.linkedin.client import LinkedInClient, WorkflowAbortedException, MissingHebrewNamesException
 from app.services.hebrew_names import (
     translate_name_to_hebrew,
@@ -36,15 +33,10 @@ class WorkflowOrchestrator:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.search: LinkedInSearch | None = None
-        self.messaging: LinkedInMessaging | None = None
-        self.connections: LinkedInConnections | None = None
+        self.client: LinkedInClient | None = None
 
     def initialize_services(self):
-        """Initialize LinkedIn services (they all share the same client singleton)."""
-        self.search = LinkedInSearch()
-        self.messaging = LinkedInMessaging()
-        self.connections = LinkedInConnections()
+        """Initialize LinkedIn client singleton."""
         self.client = LinkedInClient.get_instance()
 
     async def run_workflow(self, job_id: int, template_id: int | None = None, force_search: bool = False, first_degree_only: bool = False) -> dict:
@@ -177,7 +169,7 @@ class WorkflowOrchestrator:
 
             # Re-run search with message generator to send messages
             try:
-                search_results = await self.search.search_company_all_degrees(
+                search_results = await self.client.search_company_all_degrees(
                     company, limit=15, message_generator=create_message
                 )
             except MissingHebrewNamesException as e:
@@ -341,7 +333,7 @@ class WorkflowOrchestrator:
 
             try:
                 # Run search with message generator - will raise exception if Hebrew name missing
-                search_results = await self.search.search_company_all_degrees(
+                search_results = await self.client.search_company_all_degrees(
                     company, limit=15, message_generator=create_message, first_degree_only=first_degree_only
                 )
             except MissingHebrewNamesException as e:
@@ -731,7 +723,7 @@ class WorkflowOrchestrator:
                 )
 
                 # Send message using profile URL
-                success = await self.messaging.send_message(
+                success = await self.client.send_message(
                     profile_url=contact.linkedin_url,
                     message=message,
                 )
@@ -779,7 +771,7 @@ class WorkflowOrchestrator:
                 note = note[:300]
 
                 # Send connection request using profile URL
-                success = await self.connections.send_connection_request(
+                success = await self.client.send_connection_request(
                     profile_url=contact.linkedin_url,
                     note=note,
                 )
@@ -890,10 +882,8 @@ class WorkflowOrchestrator:
         self.db.add(activity)
 
     async def close(self):
-        """Clean up resources. LinkedIn services auto-close their browser contexts."""
-        self.search = None
-        self.messaging = None
-        self.connections = None
+        """Clean up resources."""
+        self.client = None
 
 
 async def run_workflow_background(job_id: int, db: AsyncSession, template_id: int | None = None):

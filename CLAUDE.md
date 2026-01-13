@@ -43,13 +43,16 @@ JobiAI/
 │   │   │   ├── workflow_orchestrator.py # Main workflow engine
 │   │   │   ├── hebrew_names.py       # Name translation service
 │   │   │   ├── job_parser.py         # URL parsing utilities
-│   │   │   └── linkedin/
-│   │   │       ├── client.py         # Playwright browser automation
-│   │   │       ├── search.py         # LinkedIn search wrapper
-│   │   │       ├── messaging.py      # Direct messaging
-│   │   │       └── connections.py    # Connection requests
+│   │   │   └── linkedin/             # LinkedIn automation module
+│   │   │       ├── client.py         # Main Playwright browser automation
+│   │   │       ├── selectors.py      # Centralized CSS selectors
+│   │   │       ├── extractors.py     # Person data extraction utilities
+│   │   │       ├── browser_utils.py  # Browser context & retry helpers
+│   │   │       ├── js_scripts.py     # JavaScript evaluation strings
+│   │   │       └── vip_filter.py     # VIP title detection
 │   │   └── utils/
-│   │       └── logger.py     # Logging utilities
+│   │       ├── logger.py     # Logging utilities
+│   │       └── delays.py     # Random delay helper
 │   ├── alembic/              # Database migrations
 │   └── linkedin_data/        # Persistent browser session
 ├── frontend/
@@ -57,8 +60,8 @@ JobiAI/
 │   │   ├── api/client.ts     # Axios API wrapper
 │   │   ├── components/Layout.tsx
 │   │   └── pages/
-│   │       ├── Dashboard.tsx # Stats + activity feed
 │   │       ├── Jobs.tsx      # Job management + workflow UI
+│   │       ├── Stats.tsx     # Statistics page
 │   │       ├── Templates.tsx # Template editor
 │   │       ├── Logs.tsx      # Activity log viewer
 │   │       └── Settings.tsx  # LinkedIn auth + selectors
@@ -339,19 +342,35 @@ class JobStatus(str, Enum):
 ### WorkflowOrchestrator (`services/workflow_orchestrator.py`)
 Main workflow engine. Key methods:
 - `run_workflow(job_id, template_id, force_search)` - Orchestrates full workflow
+- Uses `LinkedInClient` directly (no wrapper classes)
 - Handles workflow state persistence and resumption
 - Catches `MissingHebrewNamesException` to pause for user input
 - Saves contacts to database after operations
-- **Abort handling**: Restores previous status and workflow_step, sets error_message to "Aborted by user"
+- **Abort handling**: Restores previous status and workflow_step, clears error_message
 
 ### LinkedInClient (`services/linkedin/client.py`)
-Playwright browser automation. Key features:
+Main Playwright browser automation class. Key features:
 - Singleton pattern (one browser instance)
 - Persistent context in `linkedin_data/browser_context/`
 - Anti-detection with playwright-stealth
+- Job queue management (only one job runs at a time)
 - Abort signal handling for user cancellation
-- `MissingHebrewNamesException` - Raised when Hebrew translation needed but missing
-- `WorkflowAbortedException` - Raised when user aborts workflow
+- Key methods:
+  - `search_company_all_degrees()` - Combined 1st/2nd/3rd degree search
+  - `check_for_replies()` - Check for message replies
+  - `send_message()` - Send direct message
+  - `send_connection_request()` - Send connection request
+- Exceptions:
+  - `MissingHebrewNamesException` - Raised when Hebrew translation needed but missing
+  - `WorkflowAbortedException` - Raised when user aborts workflow
+
+### LinkedIn Module Utilities (`services/linkedin/`)
+Centralized utilities for LinkedIn automation:
+- **`selectors.py`** - All CSS selectors in one place (easy to update when LinkedIn changes)
+- **`extractors.py`** - Person data extraction from search results
+- **`browser_utils.py`** - Browser context management, retry helpers, chat modal helpers
+- **`js_scripts.py`** - JavaScript evaluation strings for page interactions
+- **`vip_filter.py`** - VIP title detection (CEO, CTO, founders, etc.)
 
 ### HebrewNames Service (`services/hebrew_names.py`)
 Name translation. Key methods:

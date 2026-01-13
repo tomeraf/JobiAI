@@ -1,15 +1,23 @@
-# LinkedIn API Services using linkedin-api library
-from app.services.linkedin.client import LinkedInClient, get_linkedin_client
-from app.services.linkedin.auth import LinkedInAuth
-from app.services.linkedin.search import LinkedInSearch
-from app.services.linkedin.messaging import LinkedInMessaging
-from app.services.linkedin.connections import LinkedInConnections
+# LinkedIn API Services
+from app.services.linkedin.client import (
+    LinkedInClient,
+    get_linkedin_client,
+    WorkflowAbortedException,
+    MissingHebrewNamesException,
+)
+from app.services.linkedin.selectors import LinkedInSelectors
+from app.services.linkedin.vip_filter import is_vip
+from app.services.linkedin.extractors import extract_person_from_search_result
+from app.services.linkedin.browser_utils import RetryHelper, ChatModalHelper
 
 __all__ = [
     "LinkedInClient",
     "get_linkedin_client",
-    "LinkedInAuth",
-    "LinkedInSearch",
-    "LinkedInMessaging",
-    "LinkedInConnections",
+    "WorkflowAbortedException",
+    "MissingHebrewNamesException",
+    "LinkedInSelectors",
+    "is_vip",
+    "extract_person_from_search_result",
+    "RetryHelper",
+    "ChatModalHelper",
 ]
