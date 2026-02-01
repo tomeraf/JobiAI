@@ -4,10 +4,33 @@ Person data extraction from LinkedIn search results.
 Centralized logic for extracting name, headline, and profile URL from search result elements.
 """
 
+import re
 from app.utils.logger import get_logger
 from .selectors import LinkedInSelectors
 
 logger = get_logger(__name__)
+
+
+def clean_name(name: str) -> str:
+    """
+    Clean extracted name by removing degree indicators and extra whitespace.
+
+    LinkedIn's new UI (2026) includes degree indicators like "• 1st", "• 2nd", "• 3rd+"
+    in the same paragraph as the name.
+
+    Args:
+        name: Raw name text from LinkedIn
+
+    Returns:
+        Cleaned name without degree indicators
+    """
+    if not name:
+        return ""
+    # Remove degree indicators like "• 1st", "• 2nd", "• 3rd+", "• 3rd"
+    cleaned = re.sub(r'\s*•\s*(1st|2nd|3rd\+?)\s*$', '', name)
+    # Also handle case where it's at the beginning or middle (shouldn't happen but just in case)
+    cleaned = re.sub(r'\s*•\s*(1st|2nd|3rd\+?)\s*', ' ', cleaned)
+    return cleaned.strip()
 
 
 def extract_text_from_element(element, selectors: list[str]) -> str:
@@ -78,24 +101,51 @@ def extract_person_from_search_result(result, company_filter: str = None) -> dic
 
     Args:
         result: Playwright element representing a search result
-        company_filter: Optional company name to filter by (must be in headline)
+        company_filter: Optional company name to filter by (checks headline and current job)
 
     Returns:
         Dict with name, headline, linkedin_url, public_id, or None if extraction failed
     """
     try:
-        # Get name
-        name = extract_text_from_element(result, LinkedInSelectors.PERSON_NAME)
+        # New LinkedIn UI (2026): Get all paragraphs and use by index
+        # The paragraphs are not siblings, so nth-of-type won't work
+        paragraphs = result.query_selector_all("p")
+
+        name = ""
+        headline = ""
+        current_job = ""
+
+        if len(paragraphs) >= 2:
+            # New UI: first paragraph is name (with degree), second is headline
+            raw_name = paragraphs[0].inner_text().strip() if paragraphs[0] else ""
+            name = clean_name(raw_name)
+            headline = paragraphs[1].inner_text().strip() if paragraphs[1] else ""
+
+            # Look for "Current:" or "Past:" paragraph which contains the actual company
+            # This is typically paragraph 3 or 4, and has a <strong> tag with company name
+            for p in paragraphs[2:]:
+                p_text = p.inner_text().strip()
+                if p_text.startswith("Current:") or p_text.startswith("Past:"):
+                    current_job = p_text
+                    break
+        else:
+            # Fallback to old selector-based extraction
+            raw_name = extract_text_from_element(result, LinkedInSelectors.PERSON_NAME)
+            name = clean_name(raw_name)
+            headline = extract_text_from_element(result, LinkedInSelectors.PERSON_HEADLINE)
+
         if not name:
             return None
 
-        # Get headline
-        headline = extract_text_from_element(result, LinkedInSelectors.PERSON_HEADLINE)
+        # Filter by company if specified - check both headline AND current job paragraph
+        if company_filter:
+            company_lower = company_filter.lower()
+            headline_lower = headline.lower() if headline else ""
+            current_job_lower = current_job.lower() if current_job else ""
 
-        # Filter by company if specified
-        if company_filter and headline:
-            if company_filter.lower() not in headline.lower():
-                logger.debug(f"Skipping {name} - company '{company_filter}' not in headline: '{headline}'")
+            # Company must be in headline OR in current job line
+            if company_lower not in headline_lower and company_lower not in current_job_lower:
+                logger.info(f"Skipping {name} - company '{company_filter}' not in headline: '{headline}'")
                 return None
 
         # Get profile link and extract public_id
@@ -154,6 +204,14 @@ def extract_people_from_search_results(
         person = extract_person_from_search_result(result, company_filter)
         if person:
             people.append(person)
+            logger.info(f"Extracted person: {person.get('name')} - {person.get('headline', '')[:50]}")
+        else:
+            # Debug: log why extraction failed
+            paragraphs = result.query_selector_all("p")
+            if paragraphs:
+                raw_name = paragraphs[0].inner_text().strip() if len(paragraphs) > 0 else "N/A"
+                raw_headline = paragraphs[1].inner_text().strip() if len(paragraphs) > 1 else "N/A"
+                logger.info(f"Skipped result - name: '{raw_name[:30]}', headline: '{raw_headline[:50]}', filter: '{company_filter}'")
 
     return people
 

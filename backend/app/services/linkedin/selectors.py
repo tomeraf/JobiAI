@@ -31,6 +31,10 @@ class LinkedInSelectors:
 
     # Search result containers
     SEARCH_RESULTS = [
+        # New LinkedIn UI (2026) - role-based list structure
+        "[role='list'] > div:has(a[href*='/in/'])",
+        "[role='list'] > div li",
+        # Fallback to older selectors
         "li.reusable-search__result-container",
         "div.entity-result",
         "[data-view-name='search-entity-result-universal-template']",
@@ -39,6 +43,9 @@ class LinkedInSelectors:
 
     # Person name in search result
     PERSON_NAME = [
+        # New LinkedIn UI (2026) - name is in first paragraph
+        "p:first-of-type",
+        # Fallback to older selectors
         "span.entity-result__title-text a span[aria-hidden='true']",
         "span.entity-result__title-text span[aria-hidden='true']",
         ".entity-result__title-text",
@@ -48,6 +55,9 @@ class LinkedInSelectors:
 
     # Person headline in search result
     PERSON_HEADLINE = [
+        # New LinkedIn UI (2026) - headline is in second paragraph
+        "p:nth-of-type(2)",
+        # Fallback to older selectors
         "div.entity-result__primary-subtitle",
         ".entity-result__primary-subtitle",
         "div.t-14.t-normal",
@@ -65,6 +75,10 @@ class LinkedInSelectors:
     def degree_filter(degree: str) -> list[str]:
         """Get selectors for a specific connection degree filter."""
         return [
+            # New LinkedIn UI (2026) - radio buttons
+            f"[role='radio']:has-text('{degree}')",
+            f"input[type='checkbox'][name='{degree}']",
+            # Fallback to older selectors
             f"button:has-text('{degree}')",
             f"button[aria-label*='{degree}']",
             f".search-reusables__filter-pill-button:has-text('{degree}')",
@@ -75,6 +89,12 @@ class LinkedInSelectors:
 
     # Active degree filter (for clearing)
     ACTIVE_DEGREE_FILTERS = [
+        # New LinkedIn UI (2026) - radio buttons with checked state
+        "[role='radio'][aria-checked='true']:has-text('1st')",
+        "[role='radio'][aria-checked='true']:has-text('2nd')",
+        "[role='radio'][aria-checked='true']:has-text('3rd')",
+        "input[type='checkbox']:checked",
+        # Fallback to older selectors
         "button.artdeco-pill--selected:has-text('1st')",
         "button.artdeco-pill--selected:has-text('2nd')",
         "button.artdeco-pill--selected:has-text('3rd')",
@@ -83,8 +103,9 @@ class LinkedInSelectors:
         "button[aria-pressed='true']:has-text('3rd')",
     ]
 
-    # Connections dropdown filter
+    # Connections dropdown filter (fallback if direct degree filters don't work)
     CONNECTIONS_DROPDOWN = [
+        "[role='radio']:has-text('Connections')",
         "button:has-text('Connections')",
         "button[aria-label*='Connections']",
         ".search-reusables__filter-pill-button:has-text('Connections')",
@@ -112,7 +133,13 @@ class LinkedInSelectors:
     ]
 
     # Connect button on search results
+    # NOTE: LinkedIn changed to links in 2026 - "Invite X to connect" links
     CONNECT_BUTTON = [
+        # New LinkedIn UI (2026) - Connect is now a link, not a button
+        "a[href*='/preload/search-custom-invite/']",
+        "a:has-text('Invite'):has-text('to connect')",
+        "link:has-text('Connect')",
+        # Fallback to older button selectors
         "button:has-text('Connect')",
         "button[aria-label*='connect']",
     ]

@@ -243,8 +243,8 @@ class WorkflowOrchestrator:
                 return results
 
             else:
-                # Nothing worked
-                job.workflow_step = WorkflowStep.DONE
+                # Nothing worked - keep workflow_step at current state so retry can resume
+                # Don't set to DONE - that would prevent retry
                 job.status = JobStatus.FAILED
                 job.error_message = "Could not send any messages or connection requests"
                 results["success"] = False
@@ -492,7 +492,8 @@ class WorkflowOrchestrator:
                         job_id=job.id,
                     )
 
-                    job.workflow_step = WorkflowStep.DONE
+                    # Keep workflow_step at current state so retry can resume
+                    # Don't set to DONE - that would prevent retry
                     job.status = JobStatus.FAILED
                     job.error_message = f"All {len(first_degree)} 1st degree contacts already messaged, no new contacts found"
                     job.processed_at = datetime.utcnow()
@@ -599,7 +600,8 @@ class WorkflowOrchestrator:
                         job_id=job.id,
                     )
 
-                    job.workflow_step = WorkflowStep.DONE
+                    # Keep workflow_step at current state so retry can resume
+                    # Don't set to DONE - that would prevent retry
                     job.status = JobStatus.FAILED
                     job.error_message = error_msg
                     job.processed_at = datetime.utcnow()

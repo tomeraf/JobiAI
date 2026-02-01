@@ -511,6 +511,19 @@ class LinkedInClient:
 
         for other in other_degrees:
             try:
+                # Try new LinkedIn UI (2026) - radio buttons
+                active_btn = page.query_selector(f"[role='radio']:has-text('{other}')")
+                if active_btn:
+                    # Check if it has checked state (via aria-checked or inner checkbox)
+                    is_checked = active_btn.get_attribute("aria-checked") == "true"
+                    if not is_checked:
+                        checkbox = active_btn.query_selector("input[type='checkbox']:checked")
+                        is_checked = checkbox is not None
+                    if is_checked:
+                        active_btn.click()
+                        page.wait_for_timeout(500)
+                        continue
+                # Fallback to old selectors
                 active_btn = page.query_selector(f"button:has-text('{other}')[aria-pressed='true']")
                 if not active_btn:
                     active_btn = page.query_selector(f"button.artdeco-pill--selected:has-text('{other}')")
