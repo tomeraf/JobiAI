@@ -127,9 +127,17 @@ class LinkedInSelectors:
     ]
 
     # Message button on search results
+    # NOTE: Similar to Connect, LinkedIn may use links or buttons
     MESSAGE_BUTTON = [
+        # New LinkedIn UI (2026) - Message might be a link now
+        "a[href*='/messaging/']:has-text('Message')",
+        "a:has-text('Message')",
+        # Button-based selectors
         "button:has-text('Message')",
         "button[aria-label*='Message']",
+        "button[aria-label*='message']",
+        # Generic fallbacks
+        "[role='button']:has-text('Message')",
     ]
 
     # Connect button on search results

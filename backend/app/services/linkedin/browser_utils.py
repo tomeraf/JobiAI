@@ -201,7 +201,7 @@ class ChatModalHelper:
         Close all open message dialogs/overlays on LinkedIn.
 
         Uses JavaScript execution for reliability with LinkedIn's dynamic DOM.
-        LinkedIn's close button does NOT have aria-label - identify by class and SVG icon.
+        LinkedIn 2026 uses Shadow DOM for messaging UI.
         """
         logger.info("Closing any open message overlays...")
         page.wait_for_timeout(500)
@@ -211,21 +211,47 @@ class ChatModalHelper:
                 () => {
                     let closedCount = 0;
 
-                    // Find all conversation bubbles (both active and inactive)
-                    const bubbles = document.querySelectorAll('.msg-overlay-conversation-bubble');
-                    for (const bubble of bubbles) {
-                        // Find header control buttons
-                        const headerControls = bubble.querySelectorAll('.msg-overlay-bubble-header__control');
-                        for (const btn of headerControls) {
-                            // Check if button contains close icon SVG
-                            if (btn.innerHTML.includes('close')) {
-                                try {
-                                    btn.click();
-                                    closedCount++;
-                                } catch (e) {}
-                                break; // Only click one close button per bubble
+                    // Helper to search in shadow DOM
+                    function findAllInShadowDOM(selector) {
+                        const results = [];
+                        document.querySelectorAll(selector).forEach(el => results.push(el));
+                        const allElements = document.querySelectorAll('*');
+                        for (const el of allElements) {
+                            if (el.shadowRoot) {
+                                el.shadowRoot.querySelectorAll(selector).forEach(shadowEl => results.push(shadowEl));
                             }
                         }
+                        return results;
+                    }
+
+                    // LinkedIn 2026: Find all dialogs in shadow DOM and close them
+                    // The close button is .msg-overlay-bubble-header__control but NOT .msg-overlay-conversation-bubble__expand-btn
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.shadowRoot) {
+                            const dialogs = el.shadowRoot.querySelectorAll('[role="dialog"]');
+                            for (const dialog of dialogs) {
+                                const headerControls = dialog.querySelectorAll('.msg-overlay-bubble-header__control');
+                                for (const btn of headerControls) {
+                                    // Close button doesn't have expand-btn class (that's the minimize button)
+                                    if (!btn.classList.contains('msg-overlay-conversation-bubble__expand-btn')) {
+                                        try {
+                                            btn.click();
+                                            closedCount++;
+                                        } catch (e) {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback: Find close buttons by aria-label (older LinkedIn versions)
+                    const closeButtons = findAllInShadowDOM('button[aria-label*="Close"]');
+                    for (const btn of closeButtons) {
+                        try {
+                            btn.click();
+                            closedCount++;
+                        } catch (e) {}
                     }
 
                     return closedCount;
@@ -238,14 +264,9 @@ class ChatModalHelper:
             else:
                 logger.info("No open message overlays found")
 
-            # Double-check if any bubbles still exist
-            still_open = page.evaluate("""
-                () => !!document.querySelector('.msg-overlay-conversation-bubble')
-            """)
-            if still_open:
-                logger.info("Overlays still detected, pressing Escape")
-                page.keyboard.press("Escape")
-                page.wait_for_timeout(300)
+            # Press Escape as backup
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
 
         except Exception as e:
             logger.warning(f"JavaScript overlay close failed: {e}")
@@ -261,45 +282,75 @@ class ChatModalHelper:
         """Close the currently open chat modal by clicking the X button."""
         try:
             # Use JavaScript to find and click the close button
-            # LinkedIn's close button does NOT have aria-label, we identify it by:
-            # 1. It's inside .msg-overlay-conversation-bubble--is-active
-            # 2. It has class .msg-overlay-bubble-header__control
-            # 3. Its SVG has data-test-icon="close" or contains "close" in innerHTML
+            # LinkedIn 2026 uses Shadow DOM for messaging UI
+            # NOTE: LinkedIn removed aria-label from close button, so we identify it by class
             closed = page.evaluate("""
                 () => {
-                    // Find the active conversation bubble
-                    const activeBubble = document.querySelector('.msg-overlay-conversation-bubble--is-active');
-                    if (!activeBubble) {
-                        // Try any conversation bubble
-                        const anyBubble = document.querySelector('.msg-overlay-conversation-bubble');
-                        if (!anyBubble) return false;
+                    // Helper to search in shadow DOM
+                    function findInShadowDOM(selector) {
+                        let result = document.querySelector(selector);
+                        if (result) return result;
+                        const allElements = document.querySelectorAll('*');
+                        for (const el of allElements) {
+                            if (el.shadowRoot) {
+                                result = el.shadowRoot.querySelector(selector);
+                                if (result) return result;
+                            }
+                        }
+                        return null;
+                    }
 
-                        const headerControls = anyBubble.querySelectorAll('.msg-overlay-bubble-header__control');
+                    function findAllInShadowDOM(selector) {
+                        const results = [];
+                        document.querySelectorAll(selector).forEach(el => results.push(el));
+                        const allElements = document.querySelectorAll('*');
+                        for (const el of allElements) {
+                            if (el.shadowRoot) {
+                                el.shadowRoot.querySelectorAll(selector).forEach(shadowEl => results.push(shadowEl));
+                            }
+                        }
+                        return results;
+                    }
+
+                    // LinkedIn 2026: Find dialog in shadow DOM and click close button
+                    // The close button is .msg-overlay-bubble-header__control but NOT .msg-overlay-conversation-bubble__expand-btn
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        if (el.shadowRoot) {
+                            const dialog = el.shadowRoot.querySelector('[role="dialog"]');
+                            if (dialog) {
+                                const headerControls = dialog.querySelectorAll('.msg-overlay-bubble-header__control');
+                                for (const btn of headerControls) {
+                                    // Close button doesn't have expand-btn class (that's the minimize button)
+                                    if (!btn.classList.contains('msg-overlay-conversation-bubble__expand-btn')) {
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback: Try aria-label (older LinkedIn versions)
+                    const closeButtons = findAllInShadowDOM('button[aria-label*="Close"]');
+                    for (const btn of closeButtons) {
+                        try {
+                            btn.click();
+                            return true;
+                        } catch (e) {}
+                    }
+
+                    // Fallback: Try legacy selectors
+                    const activeBubble = findInShadowDOM('.msg-overlay-conversation-bubble--is-active') ||
+                                        findInShadowDOM('.msg-overlay-conversation-bubble');
+                    if (activeBubble) {
+                        const headerControls = activeBubble.querySelectorAll('.msg-overlay-bubble-header__control');
                         for (const btn of headerControls) {
-                            if (btn.innerHTML.includes('close')) {
+                            if (!btn.classList.contains('msg-overlay-conversation-bubble__expand-btn')) {
                                 btn.click();
                                 return true;
                             }
                         }
-                        return false;
-                    }
-
-                    // Find header control buttons in the active bubble
-                    const headerControls = activeBubble.querySelectorAll('.msg-overlay-bubble-header__control');
-
-                    // Look for the close button by checking SVG icon
-                    for (const btn of headerControls) {
-                        // Check if the button contains a close icon SVG
-                        if (btn.innerHTML.includes('close')) {
-                            btn.click();
-                            return true;
-                        }
-                    }
-
-                    // Fallback: the close button is usually the last header control
-                    if (headerControls.length >= 2) {
-                        headerControls[headerControls.length - 1].click();
-                        return true;
                     }
 
                     return false;
@@ -308,31 +359,9 @@ class ChatModalHelper:
 
             page.wait_for_timeout(500)
 
-            # Verify chat is closed
-            still_open = page.evaluate("""
-                () => !!document.querySelector('.msg-overlay-conversation-bubble--is-active')
-            """)
-
-            if still_open:
-                # Try clicking outside the modal to close it
-                logger.info("Chat still open, trying to click outside to close")
-                try:
-                    # Click on the search results area to dismiss the chat
-                    page.click("body", position={"x": 400, "y": 300}, force=True)
-                    page.wait_for_timeout(300)
-                except Exception:
-                    pass
-
-                # Check again
-                still_open = page.evaluate("""
-                    () => !!document.querySelector('.msg-overlay-conversation-bubble--is-active')
-                """)
-
-                if still_open:
-                    # Last resort - press Escape multiple times
-                    for i in range(3):
-                        page.keyboard.press("Escape")
-                        page.wait_for_timeout(200)
+            # Press Escape as backup
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
 
             return True
         except Exception as e:
@@ -349,11 +378,79 @@ class ChatModalHelper:
     def is_modal_open(page) -> bool:
         """Check if a chat modal is currently open."""
         try:
-            return page.evaluate("""
-                () => !!(document.querySelector('[role="dialog"]') ||
-                         document.querySelector('.msg-overlay-conversation-bubble'))
+            # LinkedIn 2026 uses Shadow DOM for messaging UI
+            result = page.evaluate("""
+                () => {
+                    const selectors = [
+                        '[role="dialog"]',
+                        '.msg-overlay-conversation-bubble',
+                        '.msg-form',
+                        '[role="textbox"]',
+                        '.msg-overlay-bubble-header',
+                        '.msg-s-message-list-container',
+                        '.artdeco-modal'
+                    ];
+
+                    const debugInfo = {
+                        lightDomChecked: true,
+                        shadowRootsFound: 0,
+                        shadowHostClasses: []
+                    };
+
+                    // Check light DOM first
+                    for (const sel of selectors) {
+                        if (document.querySelector(sel)) {
+                            return {found: true, selector: sel, location: 'light-dom', debug: debugInfo};
+                        }
+                    }
+
+                    // Recursive function to search shadow DOM at any depth
+                    const searchShadowDOM = (root, depth = 0) => {
+                        if (depth > 5) return null; // Prevent infinite recursion
+
+                        const elements = root.querySelectorAll('*');
+                        for (const el of elements) {
+                            if (el.shadowRoot) {
+                                debugInfo.shadowRootsFound++;
+                                debugInfo.shadowHostClasses.push(el.className.substring(0, 50));
+
+                                // Check this shadow root
+                                for (const sel of selectors) {
+                                    const found = el.shadowRoot.querySelector(sel);
+                                    if (found) {
+                                        return {selector: sel, depth: depth};
+                                    }
+                                }
+
+                                // Search nested shadow roots
+                                const nested = searchShadowDOM(el.shadowRoot, depth + 1);
+                                if (nested) return nested;
+                            }
+                        }
+                        return null;
+                    };
+
+                    const shadowResult = searchShadowDOM(document);
+                    if (shadowResult) {
+                        return {
+                            found: true,
+                            selector: shadowResult.selector,
+                            location: 'shadow-dom-depth-' + shadowResult.depth,
+                            debug: debugInfo
+                        };
+                    }
+
+                    return {found: false, selector: null, debug: debugInfo};
+                }
             """)
-        except:
+            if result.get('found'):
+                logger.info(f"Modal detected via: {result.get('selector')} in {result.get('location')}")
+            else:
+                debug = result.get('debug', {})
+                logger.info(f"Modal NOT detected - shadow roots found: {debug.get('shadowRootsFound', 0)}, hosts: {debug.get('shadowHostClasses', [])[:3]}")
+            return result.get('found', False)
+        except Exception as e:
+            logger.warning(f"Error checking modal: {e}")
             return False
 
 

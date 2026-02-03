@@ -10,6 +10,7 @@ from app.database import get_db, AsyncSessionLocal
 from app.models.job import Job, JobStatus, WorkflowStep
 from app.models.contact import Contact
 from app.models.activity import ActivityLog, ActionType
+from app.models.site_selector import SiteSelector
 from app.services.job_processor import JobProcessor
 from app.services.workflow_orchestrator import WorkflowOrchestrator
 from app.services.hebrew_names import save_hebrew_name
@@ -775,7 +776,8 @@ async def update_company_name(
     Update the company name for a job.
 
     Use this when the bot extracted the wrong company name
-    and you want to correct it manually.
+    and you want to correct it manually. Also updates the site selector
+    so future jobs from the same domain will use the new company name.
     """
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
@@ -787,13 +789,35 @@ async def update_company_name(
         raise HTTPException(status_code=400, detail="Cannot update a job that is currently processing")
 
     old_name = job.company_name
-    job.company_name = data.company_name.strip()
+    new_name = data.company_name.strip()
+    job.company_name = new_name
+
+    # Also update the site selector for this domain so future jobs get the correct name
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(job.url)
+        domain = parsed.netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        if domain:
+            selector_result = await db.execute(
+                select(SiteSelector).where(SiteSelector.domain == domain)
+            )
+            selector = selector_result.scalar_one_or_none()
+
+            if selector:
+                selector.company_name = new_name
+                selector.example_company = new_name
+                logger.info(f"Updated site selector for domain '{domain}' with new company name: {new_name}")
+    except Exception as e:
+        logger.warning(f"Could not update site selector: {e}")
 
     # Log activity
     activity = ActivityLog(
         action_type=ActionType.COMPANY_EXTRACTED,
-        description=f"Company name manually changed from '{old_name}' to '{job.company_name}'",
-        details={"job_id": job_id, "old_name": old_name, "new_name": job.company_name},
+        description=f"Company name manually changed from '{old_name}' to '{new_name}'",
+        details={"job_id": job_id, "old_name": old_name, "new_name": new_name},
         job_id=job.id,
     )
     db.add(activity)
@@ -801,7 +825,7 @@ async def update_company_name(
     await db.commit()
     await db.refresh(job)
 
-    logger.info(f"Updated company name for job {job_id}: '{old_name}' -> '{job.company_name}'")
+    logger.info(f"Updated company name for job {job_id}: '{old_name}' -> '{new_name}'")
 
     return job
 

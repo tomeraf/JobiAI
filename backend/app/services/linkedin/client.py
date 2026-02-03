@@ -385,10 +385,15 @@ class LinkedInClient:
             context = None
             try:
                 logger.info(f"Running in {'FAST' if FAST_MODE else 'SAFE'} mode (delays: {DELAY_MS}ms)")
+                logger.info("Launching browser context...")
+                import time
+                launch_start = time.time()
                 context = p.chromium.launch_persistent_context(
                     str(BROWSER_DATA_PATH),
                     **get_browser_args()
                 )
+                launch_time = time.time() - launch_start
+                logger.info(f"Browser launched in {launch_time:.1f}s")
                 page = context.pages[0] if context.pages else context.new_page()
                 page.set_default_timeout(10000)
                 _apply_stealth(page)
@@ -448,14 +453,14 @@ class LinkedInClient:
                     logger.info("Trying 2nd degree connections...")
                     self._apply_connection_filter(page, "2nd")
 
-                    connected_people = self._send_connection_requests_on_search_page(page, company, max_requests=10)
+                    connected_people = self._send_connection_requests_on_search_page(page, company, max_requests=5)
                     result["second_degree"] = connected_people
                     result["connection_requests_sent"] = connected_people
 
-                    # Try 3rd+ if we haven't reached 10
-                    if len(connected_people) < 10:
+                    # Try 3rd+ if we haven't reached 5
+                    if len(connected_people) < 5:
                         self.check_abort()
-                        remaining = 10 - len(connected_people)
+                        remaining = 5 - len(connected_people)
                         logger.info(f"Trying 3rd+ degree for {remaining} more...")
                         self._apply_connection_filter(page, "3rd+")
                         connected_3rd = self._send_connection_requests_on_search_page(page, company, max_requests=remaining)
@@ -636,6 +641,7 @@ class LinkedInClient:
                     page, result, LinkedInSelectors.MESSAGE_BUTTON, f"find Message button for {person['name']}"
                 )
                 if not message_btn:
+                    logger.info(f"Skipping {person['name']} - no Message button found")
                     continue
 
                 # Close any existing chat before opening a new one
@@ -644,12 +650,37 @@ class LinkedInClient:
                     ChatModalHelper.close_current_chat(page)
                     page.wait_for_timeout(500)
 
-                logger.info(f"Clicking Message for: {person['name']}")
-                message_btn.click()
-                page.wait_for_timeout(DELAY_MS * 2)
+                # Log what element we found for debugging
+                btn_tag = message_btn.evaluate("el => el.tagName")
+                btn_href = message_btn.evaluate("el => el.href || 'none'")
+                logger.info(f"Clicking Message for: {person['name']} (tag={btn_tag}, href={btn_href[:50] if btn_href != 'none' else 'none'})")
 
-                if not ChatModalHelper.is_modal_open(page):
+                url_before = page.url
+                message_btn.click()
+                page.wait_for_timeout(1500)  # Wait 1.5 seconds for modal to appear
+
+                # Check if we navigated away (link click) vs modal opened
+                url_after = page.url
+                if url_after != url_before:
+                    logger.info(f"Message click navigated to: {url_after[:80]}")
+                    # If we navigated to messaging page, the conversation should be there
+                    # Try to find the textbox on the messaging page
+                    page.wait_for_timeout(1000)
+
+                # Retry checking for modal a few times
+                modal_found = False
+                for attempt in range(3):
+                    if ChatModalHelper.is_modal_open(page):
+                        modal_found = True
+                        break
+                    page.wait_for_timeout(500)
+
+                if not modal_found:
                     logger.info(f"Chat modal did not open for {person['name']}, skipping")
+                    # If we navigated, go back
+                    if url_after != url_before:
+                        page.go_back()
+                        page.wait_for_timeout(1000)
                     continue
 
                 # Check for existing message history
@@ -906,7 +937,7 @@ class LinkedInClient:
                         page.wait_for_timeout(2000)
 
                         # Check for replies
-                        reply_result = page.evaluate(get_reply_check_script(), name)
+                        reply_result = page.evaluate(get_reply_check_script(name))
                         has_reply = reply_result.get('hasReply', False) if isinstance(reply_result, dict) else False
 
                         if has_reply:

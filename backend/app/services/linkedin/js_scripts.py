@@ -15,6 +15,54 @@ SYSTEM_MESSAGE_PATTERNS = [
 ]
 
 
+def _get_shadow_dom_helper_start() -> str:
+    """
+    Start of IIFE wrapper with shadow DOM helper functions.
+    LinkedIn 2026 uses shadow DOM for messaging UI.
+    """
+    return """
+        (() => {
+            const findInShadowDOM = (selector) => {
+                // Try light DOM first
+                let result = document.querySelector(selector);
+                if (result) return result;
+
+                // Search in shadow roots
+                const allElements = document.querySelectorAll('*');
+                for (const el of allElements) {
+                    if (el.shadowRoot) {
+                        result = el.shadowRoot.querySelector(selector);
+                        if (result) return result;
+                    }
+                }
+                return null;
+            };
+
+            const findAllInShadowDOM = (selector) => {
+                const results = [];
+
+                // Add from light DOM
+                document.querySelectorAll(selector).forEach(el => results.push(el));
+
+                // Add from shadow roots
+                const allElements = document.querySelectorAll('*');
+                for (const el of allElements) {
+                    if (el.shadowRoot) {
+                        el.shadowRoot.querySelectorAll(selector).forEach(shadowEl => results.push(shadowEl));
+                    }
+                }
+                return results;
+            };
+    """
+
+
+def _get_shadow_dom_helper_end() -> str:
+    """End of IIFE wrapper."""
+    return """
+        })()
+    """
+
+
 def get_message_history_script() -> str:
     """
     JavaScript to check for message history in a chat modal.
@@ -25,13 +73,12 @@ def get_message_history_script() -> str:
         - method: Detection method used
         - debug: Debug information
     """
-    return """
-        () => {
+    return _get_shadow_dom_helper_start() + """
             const result = { count: 0, texts: [], method: '', debug: {} };
 
-            // Find the chat dialog
-            const roleDialog = document.querySelector('[role="dialog"]');
-            const overlayBubble = document.querySelector('.msg-overlay-conversation-bubble');
+            // Find the chat dialog (check shadow DOM too - LinkedIn 2026)
+            const roleDialog = findInShadowDOM('[role="dialog"]');
+            const overlayBubble = findInShadowDOM('.msg-overlay-conversation-bubble');
             result.debug.hasRoleDialog = !!roleDialog;
             result.debug.hasOverlayBubble = !!overlayBubble;
 
@@ -118,11 +165,10 @@ def get_message_history_script() -> str:
             });
 
             return result;
-        }
-    """
+    """ + _get_shadow_dom_helper_end()
 
 
-def get_reply_check_script() -> str:
+def get_reply_check_script(contact_name: str) -> str:
     """
     JavaScript to check for replies from a contact in an open conversation.
 
@@ -133,18 +179,21 @@ def get_reply_check_script() -> str:
         - outboundCount: Number of messages from us
         - debug: Debug information
     """
-    return """
-        (contactName) => {
+    # Escape any quotes in contact name
+    escaped_name = contact_name.replace("'", "\\'").replace('"', '\\"')
+    return _get_shadow_dom_helper_start() + '''
+            const contactName = "''' + escaped_name + '''";
             const bubbleSelectors = [
                 '.msg-overlay-conversation-bubble',
                 '.msg-convo-wrapper',
                 '.msg-s-message-list',
-                '.msg-s-message-list-container'
+                '.msg-s-message-list-container',
+                '[role="dialog"]'
             ];
 
             let bubble = null;
             for (const sel of bubbleSelectors) {
-                bubble = document.querySelector(sel);
+                bubble = findInShadowDOM(sel);
                 if (bubble) break;
             }
 
@@ -243,27 +292,24 @@ def get_reply_check_script() -> str:
                 contactFirstName: contactFirstName,
                 debug: debugInfo
             };
-        }
-    """
+    ''' + _get_shadow_dom_helper_end()
 
 
 def get_close_overlay_script() -> str:
     """JavaScript to close all message overlays."""
-    return """
-        () => {
+    return _get_shadow_dom_helper_start() + """
             let closedCount = 0;
 
-            const closeButtonsByAria = document.querySelectorAll(
-                '.msg-overlay-conversation-bubble button[aria-label*="Close"], ' +
-                '.msg-overlay-bubble-header button[aria-label*="Close"], ' +
-                '[role="dialog"] button[aria-label*="Close"]'
+            // Search in both light DOM and shadow DOM
+            const closeButtonsByAria = findAllInShadowDOM(
+                'button[aria-label*="Close"]'
             );
             closeButtonsByAria.forEach(btn => {
                 try { btn.click(); closedCount++; } catch (e) {}
             });
 
             if (closedCount === 0) {
-                const conversationBubbles = document.querySelectorAll('.msg-overlay-conversation-bubble');
+                const conversationBubbles = findAllInShadowDOM('.msg-overlay-conversation-bubble');
                 conversationBubbles.forEach(bubble => {
                     const closeBtn = bubble.querySelector(
                         '.msg-overlay-bubble-header__control:not(.msg-overlay-conversation-bubble__expand-btn)'
@@ -274,7 +320,7 @@ def get_close_overlay_script() -> str:
                 });
             }
 
-            const draftCloseButtons = document.querySelectorAll(
+            const draftCloseButtons = findAllInShadowDOM(
                 'button[aria-label="Close your draft conversation"]'
             );
             draftCloseButtons.forEach(btn => {
@@ -288,31 +334,24 @@ def get_close_overlay_script() -> str:
             }
 
             return closedCount;
-        }
-    """
+    """ + _get_shadow_dom_helper_end()
 
 
 def get_close_current_chat_script() -> str:
     """JavaScript to close the current chat modal."""
-    return """
-        () => {
-            const closeButtons = document.querySelectorAll(
-                '.msg-overlay-conversation-bubble button[aria-label*="Close"], ' +
-                '.msg-overlay-bubble-header button[aria-label*="Close"], ' +
-                '[role="dialog"] button[aria-label*="Close"]'
-            );
+    return _get_shadow_dom_helper_start() + """
+            const closeButtons = findAllInShadowDOM('button[aria-label*="Close"]');
             for (const btn of closeButtons) {
                 try { btn.click(); break; } catch (e) {}
             }
-        }
-    """
+    """ + _get_shadow_dom_helper_end()
 
 
 def get_check_overlay_open_script() -> str:
     """JavaScript to check if any overlay is open."""
-    return """
-        () => !!document.querySelector('.msg-overlay-conversation-bubble, [role="dialog"]')
-    """
+    return _get_shadow_dom_helper_start() + """
+            return !!findInShadowDOM('.msg-overlay-conversation-bubble') || !!findInShadowDOM('[role="dialog"]');
+    """ + _get_shadow_dom_helper_end()
 
 
 def get_scroll_to_bottom_script() -> str:

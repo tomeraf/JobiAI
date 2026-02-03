@@ -45,10 +45,12 @@ cd /d %~dp0backend
 if not exist "venv" (
     echo Creating Python virtual environment...
     python -m venv venv
+    call venv\Scripts\activate.bat
+    python -m pip install --upgrade pip -q 2>nul
+    pip install -r requirements.txt -q 2>nul
+) else (
+    call venv\Scripts\activate.bat
 )
-call venv\Scripts\activate.bat
-python -m pip install --upgrade pip -q 2>nul
-pip install -r requirements.txt -q 2>nul
 
 :: Detect available ports (including database port)
 echo.
@@ -60,11 +62,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Read port configuration
+:: Read port configuration (single PowerShell call for speed)
 cd /d %~dp0
-for /f "delims=" %%i in ('powershell -Command "(Get-Content .ports.json | ConvertFrom-Json).backend_port"') do set BACKEND_PORT=%%i
-for /f "delims=" %%i in ('powershell -Command "(Get-Content .ports.json | ConvertFrom-Json).frontend_port"') do set FRONTEND_PORT=%%i
-for /f "delims=" %%i in ('powershell -Command "(Get-Content .ports.json | ConvertFrom-Json).database_port"') do set DATABASE_PORT=%%i
+for /f "tokens=1,2,3 delims=," %%a in ('powershell -NoProfile -Command "$j=Get-Content .ports.json|ConvertFrom-Json; Write-Host $j.backend_port,$j.frontend_port,$j.database_port -Separator ','"') do (
+    set BACKEND_PORT=%%a
+    set FRONTEND_PORT=%%b
+    set DATABASE_PORT=%%c
+)
 
 echo [OK] Ports detected:
 echo     Backend:  %BACKEND_PORT%
@@ -136,7 +140,7 @@ set "BACKEND_DB_URL=postgresql+asyncpg://postgres:postgres@localhost:%DATABASE_P
 start /min "JobiAI Backend" cmd /c "cd /d %~dp0backend && call venv\Scripts\activate.bat && set DATABASE_URL=%BACKEND_DB_URL% && uvicorn app.main:app --reload --host 0.0.0.0 --port %BACKEND_PORT%"
 
 :: Wait a moment for backend to start
-timeout /t 3 /nobreak >nul
+timeout /t 1 /nobreak >nul
 
 :: Install frontend dependencies if needed
 cd /d %~dp0frontend
@@ -150,7 +154,7 @@ echo     Starting Frontend on port %FRONTEND_PORT%...
 start /min "JobiAI Frontend" cmd /c "cd /d %~dp0frontend && npm run dev"
 
 :: Wait for frontend to start
-timeout /t 5 /nobreak >nul
+timeout /t 2 /nobreak >nul
 
 echo.
 echo ========================================

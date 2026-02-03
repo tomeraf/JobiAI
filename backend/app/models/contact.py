@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy import String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -7,9 +7,13 @@ from app.database import Base
 
 class Contact(Base):
     __tablename__ = "contacts"
+    __table_args__ = (
+        # Same person can be contacted for different jobs, but not duplicated within same job
+        UniqueConstraint('linkedin_url', 'job_id', name='uq_contact_linkedin_url_job_id'),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    linkedin_url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    linkedin_url: Mapped[str] = mapped_column(Text, nullable=False)  # Removed unique=True
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     position: Mapped[str | None] = mapped_column(String(255), nullable=True)

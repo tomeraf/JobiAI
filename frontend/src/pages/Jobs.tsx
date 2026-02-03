@@ -1177,8 +1177,10 @@ function Jobs() {
 
   const jobs: Job[] = data?.jobs || []
 
-  // Count jobs needing input
+  // Count jobs needing input - split by type
   const needsInputCount = jobs.filter(j => j.status === 'needs_input').length
+  const needsHebrewNamesCount = jobs.filter(j => j.status === 'needs_input' && j.workflow_step === 'needs_hebrew_names').length
+  const needsSiteInfoCount = jobs.filter(j => j.status === 'needs_input' && j.workflow_step !== 'needs_hebrew_names').length
 
   // State for Run All filter
   const [runAllFilter, setRunAllFilter] = useState<string>('search_message')
@@ -1411,19 +1413,38 @@ function Jobs() {
         </div>
       </div>
 
-      {/* Alert for jobs needing input */}
-      {needsInputCount > 0 && !statusFilter && (
+      {/* Alert for jobs needing site info */}
+      {needsSiteInfoCount > 0 && !statusFilter && (
         <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6 flex items-center gap-3">
           <HelpCircle className="w-5 h-5 text-orange-500 flex-shrink-0" />
           <div className="flex-1">
             <p className="text-sm text-orange-800">
-              <strong>{needsInputCount} job{needsInputCount > 1 ? 's' : ''}</strong> need{needsInputCount === 1 ? 's' : ''} your input.
-              The bot doesn't recognize the job site and needs you to provide information.
+              <strong>{needsSiteInfoCount} job{needsSiteInfoCount > 1 ? 's' : ''}</strong> need{needsSiteInfoCount === 1 ? 's' : ''} your input.
+              The bot doesn't recognize the job site and needs you to provide the company name.
             </p>
           </div>
           <button
             onClick={() => setStatusFilter('needs_input')}
             className="px-3 py-1 bg-orange-100 text-orange-700 rounded text-sm hover:bg-orange-200"
+          >
+            View
+          </button>
+        </div>
+      )}
+
+      {/* Alert for jobs needing Hebrew name translations */}
+      {needsHebrewNamesCount > 0 && !statusFilter && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-6 flex items-center gap-3">
+          <HelpCircle className="w-5 h-5 text-purple-500 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm text-purple-800">
+              <strong>{needsHebrewNamesCount} job{needsHebrewNamesCount > 1 ? 's' : ''}</strong> need{needsHebrewNamesCount === 1 ? 's' : ''} Hebrew name translations.
+              Click the purple button to provide translations for contact names.
+            </p>
+          </div>
+          <button
+            onClick={() => setStatusFilter('needs_input')}
+            className="px-3 py-1 bg-purple-100 text-purple-700 rounded text-sm hover:bg-purple-200"
           >
             View
           </button>

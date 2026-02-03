@@ -660,16 +660,17 @@ class WorkflowOrchestrator:
             if not linkedin_url:
                 continue
 
-            # Check if contact already exists
+            # Check if contact already exists FOR THIS JOB
+            # (same person can be contacted for multiple jobs)
             result = await self.db.execute(
-                select(Contact).where(Contact.linkedin_url == linkedin_url)
+                select(Contact).where(
+                    Contact.linkedin_url == linkedin_url,
+                    Contact.job_id == job.id
+                )
             )
             existing = result.scalar_one_or_none()
 
             if existing:
-                # Update job association if needed
-                if not existing.job_id:
-                    existing.job_id = job.id
                 # Update message_sent_at if message was sent from search page
                 if already_messaged and not existing.message_sent_at:
                     existing.message_sent_at = datetime.utcnow()

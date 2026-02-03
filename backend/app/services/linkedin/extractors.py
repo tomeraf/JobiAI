@@ -121,12 +121,18 @@ def extract_person_from_search_result(result, company_filter: str = None) -> dic
             name = clean_name(raw_name)
             headline = paragraphs[1].inner_text().strip() if paragraphs[1] else ""
 
-            # Look for "Current:" or "Past:" paragraph which contains the actual company
+            # Look for "Current:" paragraph which contains the actual company
+            # Skip "Past:" - we only want current employees, not former ones
             # This is typically paragraph 3 or 4, and has a <strong> tag with company name
             for p in paragraphs[2:]:
                 p_text = p.inner_text().strip()
-                if p_text.startswith("Current:") or p_text.startswith("Past:"):
+                if p_text.startswith("Current:"):
                     current_job = p_text
+                    break
+                elif p_text.startswith("Past:"):
+                    # Found "Past:" but no "Current:" yet - this person used to work there
+                    # Don't set current_job, they'll only match if company is in headline
+                    logger.debug(f"Found 'Past:' for {name}: {p_text[:60]}...")
                     break
         else:
             # Fallback to old selector-based extraction
