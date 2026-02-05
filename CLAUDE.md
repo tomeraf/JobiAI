@@ -7,8 +7,9 @@
 - **Start everything with**: `start-dev.bat` (opens CMD windows with live output)
 - **Restart with**: `restart-dev.bat` (stops and starts all services)
 - **The app runs in CMD windows** - check these for live errors/logs when debugging
-- **Backend port**: 9000 (local uvicorn)
+- **Backend port**: Dynamic (tries 9000-9099, then 9200-9299, then 9500-9599 due to Windows/Hyper-V port exclusions)
 - **Frontend port**: 5173 (local Vite)
+- **Port config saved to**: `.ports.json` (shared between backend and frontend)
 
 ## Project Overview
 A bot that helps users apply for jobs by leveraging LinkedIn connections. Users submit job URLs through a web app, and the bot automatically finds and contacts relevant people at the target company.
@@ -52,7 +53,8 @@ JobiAI/
 │   │   │       └── vip_filter.py     # VIP title detection
 │   │   └── utils/
 │   │       ├── logger.py     # Logging utilities
-│   │       └── delays.py     # Random delay helper
+│   │       ├── delays.py     # Random delay helper
+│   │       └── port_finder.py # Dynamic port allocation
 │   ├── alembic/              # Database migrations
 │   └── linkedin_data/        # Persistent browser session
 ├── frontend/
@@ -351,11 +353,14 @@ Main workflow engine. Key methods:
 ### LinkedInClient (`services/linkedin/client.py`)
 Main Playwright browser automation class. Key features:
 - Singleton pattern (one browser instance)
+- **Persistent browser session** - Browser stays open between operations for faster subsequent calls
 - Persistent context in `linkedin_data/browser_context/`
 - Anti-detection with playwright-stealth
 - Job queue management (only one job runs at a time)
 - Abort signal handling for user cancellation
 - Key methods:
+  - `_get_or_create_browser()` - Reuses existing browser or creates new one
+  - `close_browser()` - Explicitly close browser (for shutdown)
   - `search_company_all_degrees()` - Combined 1st/2nd/3rd degree search
   - `check_for_replies()` - Check for message replies
   - `send_message()` - Send direct message
@@ -368,6 +373,9 @@ Main Playwright browser automation class. Key features:
 Centralized utilities for LinkedIn automation:
 - **`selectors.py`** - All CSS selectors in one place (easy to update when LinkedIn changes)
 - **`extractors.py`** - Person data extraction from search results
+  - `clean_name()` - Removes degree indicators (• 1st, • 2nd) from names
+  - `extract_person_from_search_result()` - Extracts name, headline, and **current job** from "Current:" paragraph
+  - Company filtering checks both headline AND current job text
 - **`browser_utils.py`** - Browser context management, retry helpers, chat modal helpers
 - **`js_scripts.py`** - JavaScript evaluation strings for page interactions
 - **`vip_filter.py`** - VIP title detection (CEO, CTO, founders, etc.)
@@ -476,6 +484,16 @@ BROWSER_HEADLESS=false  # Always false (LinkedIn detects headless)
 FAST_MODE=true          # true=300ms delays, false=1000ms delays
 ```
 
+## Dynamic Port Allocation
+
+Windows/Hyper-V reserves random port ranges that change on reboot. The `port_finder.py` utility handles this:
+
+- **Backend ports**: Tries 9000-9099, then 9200-9299, then 9500-9599
+- **Frontend ports**: 5173-5999
+- **Database ports**: 5432-5436, then 15432-15532, then 25432-25532
+- **Config file**: `.ports.json` stores the current port configuration
+- **Check excluded ports**: `netsh interface ipv4 show excludedportrange protocol=tcp`
+
 ---
 
 ## Anti-Detection Strategy
@@ -484,6 +502,7 @@ FAST_MODE=true          # true=300ms delays, false=1000ms delays
 - Random delays between actions (300-2000ms)
 - Headed browser only (headless is detected)
 - Persistent browser profile (maintains cookies/session)
+- **Browser stays open between missions** - more human-like, avoids repeated launches
 - Human-like scrolling and clicking patterns
 - Respects rate limits (~100-150 messages/day, ~50-100 connections/week)
 
@@ -552,10 +571,12 @@ When LinkedIn requires email to connect with someone:
 The "Check Replies" feature opens LinkedIn messaging and checks if any contact has replied:
 
 1. **Panel Detection**: Before clicking the messaging button, checks if panel is already open
-2. **Close existing chats**: Closes all open message overlays at page load
-3. **Conversation Search**: Finds conversations by contact name in the messaging overlay
-4. **Reply Detection**: Uses JavaScript to analyze messages in the conversation
-5. **Result**: If ANY inbound message exists, marks as replied and sets `workflow_step=DONE`
+2. **Wait for conversations to load**: 5 second wait after opening messaging panel (critical for reliability)
+3. **Close existing chats**: Closes all open message overlays at page load
+4. **Conversation Search**: Finds conversations by contact name in the messaging overlay (3 retry attempts)
+5. **Wait for conversation load**: 3 second wait after clicking a conversation
+6. **Reply Detection**: Uses JavaScript to analyze messages in the conversation
+7. **Result**: If ANY inbound message exists, marks as replied and sets `workflow_step=DONE`
 
 **UI Feedback**: When in `waiting_for_reply` or `waiting_for_accept` state, the badge shows "No reply (checked Xm ago)" using the `last_reply_check_at` timestamp.
 

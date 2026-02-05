@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Literal
@@ -1041,15 +1041,40 @@ async def delete_contact(job_id: int, contact_id: int, db: AsyncSession = Depend
         raise HTTPException(status_code=404, detail="Contact not found")
 
     contact_name = contact.name
+    was_messaged = contact.message_sent_at is not None
 
     # Delete the contact
     await db.delete(contact)
+
+    # Check if job should revert to waiting_for_accept
+    # (when deleting the last messaged contact from a waiting_for_reply job)
+    workflow_changed = False
+    if job.workflow_step == WorkflowStep.WAITING_FOR_REPLY and was_messaged:
+        # Count remaining messaged contacts (excluding the one being deleted)
+        result = await db.execute(
+            select(func.count(Contact.id))
+            .where(Contact.job_id == job_id)
+            .where(Contact.id != contact_id)
+            .where(Contact.message_sent_at.isnot(None))
+        )
+        remaining_messaged = result.scalar() or 0
+
+        if remaining_messaged == 0:
+            # No more messaged contacts, revert to waiting_for_accept
+            job.workflow_step = WorkflowStep.WAITING_FOR_ACCEPT
+            workflow_changed = True
+            logger.info(f"Job {job_id}: No more messaged contacts, reverting to waiting_for_accept")
 
     # Log activity
     activity = ActivityLog(
         action_type=ActionType.CONNECTION_SEARCH,
         description=f"Removed {contact_name} from contact list",
-        details={"job_id": job_id, "contact_id": contact_id, "contact_name": contact_name},
+        details={
+            "job_id": job_id,
+            "contact_id": contact_id,
+            "contact_name": contact_name,
+            "workflow_changed": workflow_changed
+        },
         job_id=job.id,
     )
     db.add(activity)
@@ -1058,7 +1083,7 @@ async def delete_contact(job_id: int, contact_id: int, db: AsyncSession = Depend
 
     logger.info(f"Removed contact {contact_name} from job {job_id}")
 
-    return {"success": True, "message": f"Contact {contact_name} removed"}
+    return {"success": True, "message": f"Contact {contact_name} removed", "workflow_changed": workflow_changed}
 
 
 @router.post("/{job_id}/mark-done", response_model=JobResponse)

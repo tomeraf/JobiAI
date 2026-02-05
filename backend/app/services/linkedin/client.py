@@ -94,6 +94,8 @@ class LinkedInClient:
     """
     LinkedIn client using Playwright with persistent browser context.
     Singleton pattern - one instance across the application.
+
+    The browser stays open between operations for faster subsequent calls.
     """
 
     _instance: "LinkedInClient | None" = None
@@ -107,6 +109,7 @@ class LinkedInClient:
             cls._instance._playwright = None
             cls._instance._browser = None
             cls._instance._context = None
+            cls._instance._page = None
             cls._instance._abort_requested = False
             cls._instance._current_job_id = None
             cls._instance._queued_jobs = []
@@ -114,6 +117,74 @@ class LinkedInClient:
 
     def __init__(self):
         pass
+
+    def _get_or_create_browser(self):
+        """
+        Get existing browser context or create a new one.
+        Keeps both playwright instance and browser open between operations for speed.
+        """
+        # If we have an existing context, try to use it
+        if self._context is not None and self._playwright is not None:
+            try:
+                # Check if context is still valid by getting pages
+                pages = self._context.pages
+                if pages:
+                    self._page = pages[0]
+                    logger.info("Reusing existing browser context")
+                    return self._context, self._page
+            except Exception as e:
+                logger.info(f"Existing context invalid: {e}, creating new one")
+                self._cleanup_browser()
+
+        # Create new playwright instance if needed
+        if self._playwright is None:
+            logger.info("Starting Playwright...")
+            self._playwright = sync_playwright().start()
+
+        # Create new context
+        logger.info("Creating new browser context...")
+        ensure_browser_data_dir()
+        self._context = self._playwright.chromium.launch_persistent_context(
+            str(BROWSER_DATA_PATH),
+            **get_browser_args()
+        )
+        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self._page.set_default_timeout(10000)
+        _apply_stealth(self._page)
+        return self._context, self._page
+
+    def _cleanup_browser(self):
+        """Clean up browser context but keep playwright instance."""
+        if self._context:
+            try:
+                self._context.close()
+            except:
+                pass
+        self._context = None
+        self._page = None
+
+    def close_browser(self):
+        """Explicitly close the browser and playwright (call when shutting down)."""
+        if self._context:
+            try:
+                logger.info("Closing browser context...")
+                if self._page:
+                    ChatModalHelper.close_all_overlays(self._page)
+                self._context.close()
+            except Exception as e:
+                logger.warning(f"Error closing browser: {e}")
+            finally:
+                self._context = None
+                self._page = None
+
+        if self._playwright:
+            try:
+                logger.info("Stopping Playwright...")
+                self._playwright.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping playwright: {e}")
+            finally:
+                self._playwright = None
 
     @classmethod
     def get_instance(cls) -> "LinkedInClient":
@@ -381,109 +452,99 @@ class LinkedInClient:
         result = {"first_degree": [], "second_degree": [], "third_plus": [], "connection_requests_sent": []}
         logger.info(f"Starting combined search for connections at: {company}")
 
-        with sync_playwright() as p:
-            context = None
-            try:
-                logger.info(f"Running in {'FAST' if FAST_MODE else 'SAFE'} mode (delays: {DELAY_MS}ms)")
-                logger.info("Launching browser context...")
-                import time
-                launch_start = time.time()
-                context = p.chromium.launch_persistent_context(
-                    str(BROWSER_DATA_PATH),
-                    **get_browser_args()
+        try:
+            logger.info(f"Running in {'FAST' if FAST_MODE else 'SAFE'} mode (delays: {DELAY_MS}ms)")
+            import time
+            launch_start = time.time()
+            context, page = self._get_or_create_browser()
+            launch_time = time.time() - launch_start
+            logger.info(f"Browser ready in {launch_time:.1f}s")
+
+            self.check_abort()
+
+            # Step 1: Go to LinkedIn feed
+            logger.info("Step 1: Going to LinkedIn feed page...")
+            page.goto("https://www.linkedin.com/feed/", timeout=60000)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            self._wait_with_abort_check(page, DELAY_MS)
+
+            # Step 2: Search for company
+            logger.info(f"Step 2: Searching for '{company}'...")
+            search_input = RetryHelper.retry_find(page, LinkedInSelectors.SEARCH_INPUT, "find search input")
+            search_input.click()
+            page.wait_for_timeout(DELAY_MS // 2)
+            search_input.fill(company)
+            page.wait_for_timeout(DELAY_MS // 2)
+            page.keyboard.press("Enter")
+
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
+
+            # Step 3: Click People tab
+            logger.info("Step 3: Clicking on People tab...")
+            self._click_people_tab(page)
+
+            self.check_abort()
+
+            # Step 4: Filter by 1st degree
+            logger.info("Step 4: Filtering by 1st degree connections...")
+            self._apply_connection_filter(page, "1st")
+            first_degree = extract_people_from_search_results(page, company)
+            result["first_degree"] = first_degree
+            logger.info(f"Found {len(first_degree)} 1st degree connections")
+
+            self.check_abort()
+
+            # Step 5: Send messages to 1st degree if found
+            messages_sent_count = 0
+            if first_degree and message_generator:
+                logger.info(f"Sending messages to 1st degree connections...")
+                messaged_people = self._send_messages_on_search_page(
+                    page, company, message_generator, num_pages=1, first_degree_only=first_degree_only
                 )
-                launch_time = time.time() - launch_start
-                logger.info(f"Browser launched in {launch_time:.1f}s")
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(10000)
-                _apply_stealth(page)
+                result["messages_sent"] = messaged_people
+                messages_sent_count = len(messaged_people)
 
+            # Step 6: Fall back to 2nd/3rd degree if needed
+            should_try_2nd = not first_degree or (first_degree and message_generator and messages_sent_count == 0)
+
+            if first_degree_only:
+                logger.info(f"First degree only mode: Sent {messages_sent_count} messages")
+            elif should_try_2nd:
                 self.check_abort()
+                logger.info("Trying 2nd degree connections...")
+                self._apply_connection_filter(page, "2nd")
 
-                # Step 1: Go to LinkedIn feed
-                logger.info("Step 1: Going to LinkedIn feed page...")
-                page.goto("https://www.linkedin.com/feed/", timeout=60000)
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
-                self._wait_with_abort_check(page, DELAY_MS)
+                connected_people = self._send_connection_requests_on_search_page(page, company, max_requests=5)
+                result["second_degree"] = connected_people
+                result["connection_requests_sent"] = connected_people
 
-                # Step 2: Search for company
-                logger.info(f"Step 2: Searching for '{company}'...")
-                search_input = RetryHelper.retry_find(page, LinkedInSelectors.SEARCH_INPUT, "find search input")
-                search_input.click()
-                page.wait_for_timeout(DELAY_MS // 2)
-                search_input.fill(company)
-                page.wait_for_timeout(DELAY_MS // 2)
-                page.keyboard.press("Enter")
-
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(3000)
-
-                # Step 3: Click People tab
-                logger.info("Step 3: Clicking on People tab...")
-                self._click_people_tab(page)
-
-                self.check_abort()
-
-                # Step 4: Filter by 1st degree
-                logger.info("Step 4: Filtering by 1st degree connections...")
-                self._apply_connection_filter(page, "1st")
-                first_degree = extract_people_from_search_results(page, company)
-                result["first_degree"] = first_degree
-                logger.info(f"Found {len(first_degree)} 1st degree connections")
-
-                self.check_abort()
-
-                # Step 5: Send messages to 1st degree if found
-                messages_sent_count = 0
-                if first_degree and message_generator:
-                    logger.info(f"Sending messages to 1st degree connections...")
-                    messaged_people = self._send_messages_on_search_page(
-                        page, company, message_generator, num_pages=1, first_degree_only=first_degree_only
-                    )
-                    result["messages_sent"] = messaged_people
-                    messages_sent_count = len(messaged_people)
-
-                # Step 6: Fall back to 2nd/3rd degree if needed
-                should_try_2nd = not first_degree or (first_degree and message_generator and messages_sent_count == 0)
-
-                if first_degree_only:
-                    logger.info(f"First degree only mode: Sent {messages_sent_count} messages")
-                elif should_try_2nd:
+                # Try 3rd+ if we haven't reached 5
+                if len(connected_people) < 5:
                     self.check_abort()
-                    logger.info("Trying 2nd degree connections...")
-                    self._apply_connection_filter(page, "2nd")
+                    remaining = 5 - len(connected_people)
+                    logger.info(f"Trying 3rd+ degree for {remaining} more...")
+                    self._apply_connection_filter(page, "3rd+")
+                    connected_3rd = self._send_connection_requests_on_search_page(page, company, max_requests=remaining)
+                    result["third_plus"] = connected_3rd
+                    result["connection_requests_sent"] = connected_people + connected_3rd
 
-                    connected_people = self._send_connection_requests_on_search_page(page, company, max_requests=5)
-                    result["second_degree"] = connected_people
-                    result["connection_requests_sent"] = connected_people
+            logger.info("Workflow complete")
+            return result
 
-                    # Try 3rd+ if we haven't reached 5
-                    if len(connected_people) < 5:
-                        self.check_abort()
-                        remaining = 5 - len(connected_people)
-                        logger.info(f"Trying 3rd+ degree for {remaining} more...")
-                        self._apply_connection_filter(page, "3rd+")
-                        connected_3rd = self._send_connection_requests_on_search_page(page, company, max_requests=remaining)
-                        result["third_plus"] = connected_3rd
-                        result["connection_requests_sent"] = connected_people + connected_3rd
-
-                logger.info("Workflow complete")
-                return result
-
-            except (WorkflowAbortedException, MissingHebrewNamesException):
-                raise
+        except (WorkflowAbortedException, MissingHebrewNamesException):
+            raise
+        except Exception as e:
+            logger.error(f"Combined search failed: {e}", exc_info=True)
+            return result
+        finally:
+            # Don't close browser - keep it open for next operation
+            # Just close any open chat overlays
+            try:
+                if self._page:
+                    ChatModalHelper.close_all_overlays(self._page)
             except Exception as e:
-                logger.error(f"Combined search failed: {e}", exc_info=True)
-                return result
-            finally:
-                if context:
-                    try:
-                        # Close any open chat overlays before closing browser
-                        if context.pages:
-                            ChatModalHelper.close_all_overlays(context.pages[0])
-                        context.close()
-                    except Exception as e:
-                        logger.warning(f"Error closing browser: {e}")
+                logger.warning(f"Error closing overlays: {e}")
 
     def _click_people_tab(self, page) -> bool:
         """Click the People tab in search results."""
@@ -882,126 +943,157 @@ class LinkedInClient:
         replied_contacts = []
         failed_contacts = []
 
-        with sync_playwright() as p:
-            context = None
-            try:
-                context = p.chromium.launch_persistent_context(
-                    str(BROWSER_DATA_PATH),
-                    **get_browser_args()
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(10000)
-                _apply_stealth(page)
+        try:
+            import time
+            launch_start = time.time()
+            context, page = self._get_or_create_browser()
+            launch_time = time.time() - launch_start
+            logger.info(f"Browser ready in {launch_time:.1f}s for reply checking")
 
+            # Navigate to feed (or stay if already there)
+            current_url = page.url
+            if "linkedin.com" not in current_url or "/login" in current_url:
                 page.goto("https://www.linkedin.com/feed/", timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=30000)
                 page.wait_for_timeout(DELAY_MS)
+            else:
+                logger.info(f"Already on LinkedIn: {current_url[:50]}")
 
-                # Open messaging panel
-                self._open_messaging_panel(page)
+            # Open messaging panel
+            self._open_messaging_panel(page)
 
-                for contact in contacts:
-                    self.check_abort()
-                    name = contact.get("name", "")
-                    if not name:
-                        continue
+            for contact in contacts:
+                self.check_abort()
+                name = contact.get("name", "")
+                if not name:
+                    continue
 
-                    logger.info(f"Checking for reply from {name}...")
+                logger.info(f"Checking for reply from {name}...")
 
-                    try:
-                        # Search for conversation
-                        search_input = None
-                        for selector in LinkedInSelectors.MESSAGING_SEARCH:
-                            search_input = page.query_selector(selector)
-                            if search_input:
-                                break
-
+                try:
+                    # Search for conversation
+                    search_input = None
+                    for selector in LinkedInSelectors.MESSAGING_SEARCH:
+                        search_input = page.query_selector(selector)
                         if search_input:
-                            search_input.fill("")
-                            page.wait_for_timeout(300)
-                            search_input.fill(name)
-                            page.wait_for_timeout(1500)
+                            break
 
-                        # Find and click conversation
-                        conversation = None
+                    if search_input:
+                        # Clear and search with proper waits
+                        search_input.click()
+                        page.wait_for_timeout(300)
+                        search_input.fill("")
+                        page.wait_for_timeout(500)
+                        search_input.fill(name)
+                        logger.info(f"Searching for conversation with '{name}', waiting for results...")
+                        # Wait longer for search results to load
+                        page.wait_for_timeout(3000)
+                    else:
+                        logger.warning("Could not find messaging search input")
+
+                    # Find and click conversation - try multiple times
+                    conversation = None
+                    for attempt in range(3):
                         for selector in conversation_selectors(name):
                             conversation = page.query_selector(selector)
                             if conversation:
                                 break
+                        if conversation:
+                            break
+                        # Wait and retry
+                        page.wait_for_timeout(1000)
 
-                        if not conversation:
-                            logger.info(f"No conversation found with {name}")
-                            continue
+                    if not conversation:
+                        logger.info(f"No conversation found with {name}")
+                        continue
 
-                        conversation.click()
-                        page.wait_for_timeout(2000)
+                    logger.info(f"Found conversation with {name}, opening...")
+                    conversation.click()
+                    # Wait longer for conversation to fully load
+                    page.wait_for_timeout(3000)
 
-                        # Check for replies
-                        reply_result = page.evaluate(get_reply_check_script(name))
-                        has_reply = reply_result.get('hasReply', False) if isinstance(reply_result, dict) else False
+                    # Check for replies
+                    reply_result = page.evaluate(get_reply_check_script(name))
+                    has_reply = reply_result.get('hasReply', False) if isinstance(reply_result, dict) else False
 
-                        if has_reply:
-                            logger.info(f"Found reply from {name}!")
-                            replied_contacts.append(contact)
-                        else:
-                            logger.info(f"No reply yet from {name}")
+                    if has_reply:
+                        logger.info(f"Found reply from {name}!")
+                        replied_contacts.append(contact)
+                    else:
+                        logger.info(f"No reply yet from {name}")
 
-                        ChatModalHelper.close_current_chat(page)
+                    ChatModalHelper.close_current_chat(page)
 
-                    except WorkflowAbortedException:
-                        raise
-                    except Exception as e:
-                        logger.warning(f"Error checking reply from {name}: {e}")
-                        failed_contacts.append({"name": name, "error": str(e)[:100]})
+                except WorkflowAbortedException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Error checking reply from {name}: {e}")
+                    failed_contacts.append({"name": name, "error": str(e)[:100]})
 
-                return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
+            return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
 
-            except WorkflowAbortedException:
-                raise
-            except Exception as e:
-                logger.error(f"Error checking for replies: {e}")
-                return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
-            finally:
-                if context:
-                    try:
-                        # Close any open chat overlays before closing browser
-                        if context.pages:
-                            ChatModalHelper.close_all_overlays(context.pages[0])
-                        context.close()
-                    except:
-                        pass
+        except WorkflowAbortedException:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking for replies: {e}")
+            return {"replied_contacts": replied_contacts, "failed_contacts": failed_contacts}
+        finally:
+            # Don't close browser - keep it open for next operation
+            # Just close any open chat overlays
+            try:
+                if self._page:
+                    ChatModalHelper.close_all_overlays(self._page)
+            except:
+                pass
 
     def _open_messaging_panel(self, page):
         """Open the messaging panel if not already open."""
+        logger.info("Opening messaging panel...")
+
         # Check if already open
         for selector in LinkedInSelectors.MESSAGING_PANEL_OPEN:
             if page.query_selector(selector):
+                logger.info("Messaging panel already open")
+                # Even if open, wait for conversations to load
+                page.wait_for_timeout(3000)
                 return
 
         # Try to click messaging button
+        clicked = False
         for selector in LinkedInSelectors.MESSAGING_BUTTON:
             btn = page.query_selector(selector)
             if btn:
+                logger.info(f"Clicking messaging button: {selector}")
                 btn.click()
-                page.wait_for_timeout(1500)
+                clicked = True
                 break
 
-        # Try minimized version
-        for selector in LinkedInSelectors.MESSAGING_MINIMIZED:
-            minimized = page.query_selector(selector)
-            if minimized:
-                minimized.click()
-                page.wait_for_timeout(1000)
-                break
+        # Try minimized version if main button didn't work
+        if not clicked:
+            for selector in LinkedInSelectors.MESSAGING_MINIMIZED:
+                minimized = page.query_selector(selector)
+                if minimized:
+                    logger.info(f"Clicking minimized messaging: {selector}")
+                    minimized.click()
+                    clicked = True
+                    break
 
-        # Wait for panel to open
+        if not clicked:
+            logger.warning("Could not find messaging button")
+            return
+
+        # Wait for panel to open with longer timeout
         try:
             page.wait_for_selector(
-                ".msg-overlay-list-bubble--is-open, .msg-overlay-list-bubble__conversations-container",
-                timeout=10000
+                ".msg-overlay-list-bubble--is-open, .msg-overlay-list-bubble__conversations-container, aside[data-test-id='msg-overlay']",
+                timeout=15000
             )
-        except:
-            logger.warning("Messaging panel did not appear")
+            logger.info("Messaging panel opened, waiting for conversations to load...")
+            # Give LinkedIn time to load conversation list - this is critical!
+            page.wait_for_timeout(5000)
+            logger.info("Conversations should be loaded now")
+        except Exception as e:
+            logger.warning(f"Messaging panel did not appear: {e}")
 
     # --- Legacy/Compatibility Methods ---
 
@@ -1035,38 +1127,31 @@ class LinkedInClient:
         if not HAS_PLAYWRIGHT:
             return []
 
-        with sync_playwright() as p:
-            try:
-                context = p.chromium.launch_persistent_context(
-                    str(BROWSER_DATA_PATH),
-                    **get_browser_args()
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(10000)
-                _apply_stealth(page)
+        try:
+            context, page = self._get_or_create_browser()
 
-                page.goto("https://www.linkedin.com/mynetwork/invite-connect/connections/", timeout=60000)
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(1000)
+            page.goto("https://www.linkedin.com/mynetwork/invite-connect/connections/", timeout=60000)
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
 
-                connections = []
-                results = []
-                for selector in LinkedInSelectors.CONNECTION_CARDS:
-                    results = page.query_selector_all(selector)
-                    if results:
-                        break
+            connections = []
+            results = []
+            for selector in LinkedInSelectors.CONNECTION_CARDS:
+                results = page.query_selector_all(selector)
+                if results:
+                    break
 
-                for card in results[:limit]:
-                    conn = extract_connection_from_card(card)
-                    if conn:
-                        connections.append(conn)
+            for card in results[:limit]:
+                conn = extract_connection_from_card(card)
+                if conn:
+                    connections.append(conn)
 
-                context.close()
-                return connections
+            # Don't close browser
+            return connections
 
-            except Exception as e:
-                logger.error(f"Failed to get connections: {e}")
-                return []
+        except Exception as e:
+            logger.error(f"Failed to get connections: {e}")
+            return []
 
     async def send_message(self, message: str, public_id: str = None, profile_url: str = None, urn_id: str = None) -> bool:
         """Send a message to a connection."""
@@ -1086,43 +1171,37 @@ class LinkedInClient:
         if not HAS_PLAYWRIGHT:
             return False
 
-        with sync_playwright() as p:
-            try:
-                context = p.chromium.launch_persistent_context(str(BROWSER_DATA_PATH), headless=False)
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(10000)
-                _apply_stealth(page)
+        try:
+            context, page = self._get_or_create_browser()
 
-                page.goto(f"https://www.linkedin.com/in/{public_id}/")
-                page.wait_for_load_state("networkidle")
+            page.goto(f"https://www.linkedin.com/in/{public_id}/")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(500)
+
+            message_btn = page.query_selector("button:has-text('Message')")
+            if not message_btn:
+                return False
+
+            message_btn.click()
+            page.wait_for_timeout(1000)
+
+            message_input = page.query_selector("div.msg-form__contenteditable")
+            if message_input:
+                message_input.fill(message)
                 page.wait_for_timeout(500)
 
-                message_btn = page.query_selector("button:has-text('Message')")
-                if not message_btn:
-                    context.close()
-                    return False
+                send_btn = page.query_selector("button.msg-form__send-button")
+                if send_btn:
+                    send_btn.click()
+                    page.wait_for_timeout(2000)
+                    ChatModalHelper.close_current_chat(page)
+                    return True
 
-                message_btn.click()
-                page.wait_for_timeout(1000)
+            return False
 
-                message_input = page.query_selector("div.msg-form__contenteditable")
-                if message_input:
-                    message_input.fill(message)
-                    page.wait_for_timeout(500)
-
-                    send_btn = page.query_selector("button.msg-form__send-button")
-                    if send_btn:
-                        send_btn.click()
-                        page.wait_for_timeout(2000)
-                        context.close()
-                        return True
-
-                context.close()
-                return False
-
-            except Exception as e:
-                logger.error(f"Failed to send message: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Failed to send message: {e}")
+            return False
 
     async def send_connection_request(self, public_id: str, message: str = None) -> bool:
         """Send a connection request."""
@@ -1135,48 +1214,41 @@ class LinkedInClient:
         if not HAS_PLAYWRIGHT:
             return False
 
-        with sync_playwright() as p:
-            try:
-                context = p.chromium.launch_persistent_context(str(BROWSER_DATA_PATH), headless=False)
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(10000)
-                _apply_stealth(page)
+        try:
+            context, page = self._get_or_create_browser()
 
-                page.goto(f"https://www.linkedin.com/in/{public_id}/")
-                page.wait_for_load_state("networkidle")
-                page.wait_for_timeout(500)
+            page.goto(f"https://www.linkedin.com/in/{public_id}/")
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(500)
 
-                connect_btn = page.query_selector("button:has-text('Connect')")
-                if not connect_btn:
-                    context.close()
-                    return False
+            connect_btn = page.query_selector("button:has-text('Connect')")
+            if not connect_btn:
+                return False
 
-                connect_btn.click()
-                page.wait_for_timeout(1000)
+            connect_btn.click()
+            page.wait_for_timeout(1000)
 
-                if message:
-                    add_note = page.query_selector("button:has-text('Add a note')")
-                    if add_note:
-                        add_note.click()
+            if message:
+                add_note = page.query_selector("button:has-text('Add a note')")
+                if add_note:
+                    add_note.click()
+                    page.wait_for_timeout(500)
+                    note_input = page.query_selector("textarea#custom-message")
+                    if note_input:
+                        note_input.fill(message[:300])
                         page.wait_for_timeout(500)
-                        note_input = page.query_selector("textarea#custom-message")
-                        if note_input:
-                            note_input.fill(message[:300])
-                            page.wait_for_timeout(500)
 
-                send_btn = page.query_selector("button:has-text('Send')")
-                if send_btn:
-                    send_btn.click()
-                    page.wait_for_timeout(2000)
-                    context.close()
-                    return True
+            send_btn = page.query_selector("button:has-text('Send')")
+            if send_btn:
+                send_btn.click()
+                page.wait_for_timeout(2000)
+                return True
 
-                context.close()
-                return False
+            return False
 
-            except Exception as e:
-                logger.error(f"Failed to send connection request: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"Failed to send connection request: {e}")
+            return False
 
 
 def get_linkedin_client() -> LinkedInClient:

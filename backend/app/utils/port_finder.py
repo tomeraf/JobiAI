@@ -21,7 +21,8 @@ DEFAULT_FRONTEND_PORT = 5173
 DEFAULT_DATABASE_PORT = 5436
 
 # Port ranges - use higher ports that are less likely to be Windows-reserved
-BACKEND_PORT_RANGE = range(9000, 9100)
+# Note: Windows/Hyper-V often excludes 9000-9104, so we extend the range to 9200+
+BACKEND_PORT_RANGE = list(range(9000, 9100)) + list(range(9200, 9300)) + list(range(9500, 9600))
 FRONTEND_PORT_RANGE = range(5173, 6000)
 # Database: try common postgres ports first, then higher ranges
 DATABASE_PORT_RANGE = [5432, 5433, 5434, 5435, 5436] + list(range(15432, 15532)) + list(range(25432, 25532))
@@ -130,7 +131,7 @@ def find_available_port(start_port: int, port_range: Union[range, List[int]]) ->
 def get_backend_port() -> int:
     """
     Get an available port for the backend server.
-    Tries ports from 9000-9099.
+    Tries ports from 9000-9099, then 9200-9299, then 9500-9599.
 
     Returns:
         Available port number
@@ -141,7 +142,7 @@ def get_backend_port() -> int:
     port = find_available_port(DEFAULT_BACKEND_PORT, BACKEND_PORT_RANGE)
     if port is None:
         raise RuntimeError(
-            f"No available port found in range {BACKEND_PORT_RANGE.start}-{BACKEND_PORT_RANGE.stop-1}"
+            f"No available port found for backend (tried ranges 9000-9099, 9200-9299, 9500-9599)"
         )
 
     logger.info(f"Backend port detected: {port}")

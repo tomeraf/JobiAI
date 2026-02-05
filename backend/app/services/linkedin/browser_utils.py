@@ -30,13 +30,13 @@ def ensure_browser_data_dir():
     BROWSER_DATA_PATH.mkdir(parents=True, exist_ok=True)
 
 
-def get_browser_args(viewport: dict = None, maximized: bool = False) -> dict:
+def get_browser_args(viewport: dict = None, maximized: bool = True) -> dict:
     """
     Get standard browser launch arguments.
 
     Args:
         viewport: Optional viewport size dict with width/height
-        maximized: If True, use maximized window (for login flow)
+        maximized: If True, use maximized window (default: True)
 
     Returns:
         Dict of arguments for launch_persistent_context
