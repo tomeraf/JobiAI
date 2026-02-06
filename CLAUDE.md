@@ -442,6 +442,16 @@ URL pattern extraction works automatically for:
 - Recruitee
 - ApplyToJob
 - iCIMS
+- Comeet
+
+### Known Company Career Sites (26 built-in)
+These domains are recognized and map directly to company names:
+- amazon.jobs, careers.cisco.com, careers.ibm.com, jobs.sap.com
+- nanit.com, rapyd.net, nayax.com, papaya.com, cato networks
+- fullpath.com, tailorbrands.com, global-e.com, surecomp.com
+- elbit, qualitest, KMS, McCann, and more
+
+See `KNOWN_COMPANY_SITES` in [job_parser.py](backend/app/services/job_parser.py) for full list.
 
 For unknown sites, the system learns the pattern from user input.
 

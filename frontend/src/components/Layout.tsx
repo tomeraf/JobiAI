@@ -29,8 +29,8 @@ function Layout() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-white flex flex-col">
+      {/* Sidebar - Fixed position */}
+      <aside className="w-64 bg-gray-900 text-white flex flex-col fixed h-screen">
         {/* Logo */}
         <div className="p-4 border-b border-gray-800">
           <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -87,8 +87,8 @@ function Layout() {
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-auto">
+      {/* Main Content - offset by sidebar width */}
+      <main className="flex-1 ml-64 overflow-auto">
         <Outlet />
       </main>
     </div>
