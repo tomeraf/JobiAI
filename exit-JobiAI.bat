@@ -1,5 +1,6 @@
 @echo off
-:: Stop JobiAI background processes
+:: Exit JobiAI - Force stop all background processes
+:: Note: JobiAI normally auto-exits when you close the browser tab
 
 echo Stopping JobiAI...
 

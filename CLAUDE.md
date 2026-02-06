@@ -1,6 +1,6 @@
 # JobiAI - LinkedIn Job Application Bot
 
-## Three Running Modes
+## Two Running Modes
 
 ### 1. Hidden Background Mode (Recommended for Daily Use)
 Double-click `JobiAI.vbs` to run completely hidden (no CMD windows):
@@ -8,12 +8,12 @@ Double-click `JobiAI.vbs` to run completely hidden (no CMD windows):
 - **Frontend**: Runs hidden on port 5173 (Vite dev server)
 - **Database**: SQLite at `%LOCALAPPDATA%\JobiAI\jobiai.db`
 - **Browser data**: `backend/linkedin_data/browser_context/` (same as dev mode)
-- **Stop**: Run `stop-background.bat`
+- **Stop**: Close the browser tab (auto-exits), or run `exit-JobiAI.bat`
 - **No Docker required** - uses SQLite by default
 
-Alternative launchers:
-- `start-hidden.pyw` - Same but with system tray icon (requires pystray)
-- `start-background.bat` - Shows brief CMD then minimizes
+**Auto-shutdown**: When you close the browser tab, the frontend sends a shutdown signal to the backend. As a fallback, if no heartbeat is received for 30 seconds, the backend auto-shuts down. This means you don't need to manually stop anything.
+
+**How it works**: The VBS sets `DATABASE_URL` env var before starting Python. The [config.py](backend/app/config.py) checks if `DATABASE_URL` is already set - if so, it skips loading `.env` (which contains PostgreSQL settings for dev mode). This lets the same code run with different databases.
 
 ### 2. Development Mode (for developers)
 - **Backend and Frontend run LOCALLY** (not in Docker)
@@ -26,12 +26,6 @@ Alternative launchers:
 - **Frontend port**: 5173 (local Vite)
 - **Port config saved to**: `.ports.json` (shared between backend and frontend)
 
-### 3. Packaged Desktop Mode (PyInstaller - Experimental)
-- **Single executable**: `JobiAI.exe` - runs as system tray app
-- **Build**: Run `build.bat` to create the executable (outputs to `dist/JobiAI.exe`)
-- **Debug mode**: Use `run-debug.bat` to run with console output visible
-- **Note**: Has issues with Playwright browser bundling - prefer Hidden Background Mode
-
 ### Migrating Data from Dev (PostgreSQL) to Hidden Mode (SQLite)
 ```bash
 # Start Docker with PostgreSQL first, then run:
@@ -42,20 +36,11 @@ python scripts/migrate_to_sqlite.py migrate \
 ```
 
 ### Database Selection
-- **If `DATABASE_URL` env var is set**: Uses that (PostgreSQL in dev mode)
-- **If not set**: Defaults to SQLite at `%LOCALAPPDATA%\JobiAI\jobiai.db`
-- The backend auto-detects and configures appropriately (see `config.py`)
+- **If `DATABASE_URL` env var is set BEFORE Python starts**: Uses that value, `.env` file is NOT loaded
+- **If `DATABASE_URL` is NOT set**: Loads `.env` file (PostgreSQL for dev mode)
+- **If neither**: Defaults to SQLite at `%LOCALAPPDATA%\JobiAI\jobiai.db`
+- Key logic in [config.py:64](backend/app/config.py#L64): `env_file = ".env" if not os.environ.get('DATABASE_URL') else None`
 
-### 4. Quick Start (No Docker)
-- **Backend and Frontend run LOCALLY** (not in Docker)
-- **Only PostgreSQL runs in Docker** (via docker-compose)
-- **Backend logs are at**: `c:\projects\JobiAI\backend\backend.log`
-- **Start everything with**: `start-dev.bat` (opens CMD windows with live output)
-- **Restart with**: `restart-dev.bat` (stops and starts all services)
-- **The app runs in CMD windows** - check these for live errors/logs when debugging
-- **Backend port**: Dynamic (tries 9000-9099, then 9200-9299, then 9500-9599 due to Windows/Hyper-V port exclusions)
-- **Frontend port**: 5173 (local Vite)
-- **Port config saved to**: `.ports.json` (shared between backend and frontend)
 
 ## Project Overview
 A bot that helps users apply for jobs by leveraging LinkedIn connections. Users submit job URLs through a web app, and the bot automatically finds and contacts relevant people at the target company.
@@ -65,7 +50,6 @@ A bot that helps users apply for jobs by leveraging LinkedIn connections. Users 
 - **Database**: SQLite (desktop) or PostgreSQL (dev mode)
 - **Frontend**: React 18, TypeScript, Vite, TailwindCSS, React Query
 - **Automation**: Playwright with playwright-stealth (anti-detection)
-- **Desktop**: pystray (system tray), PyInstaller (packaging)
 - **Containerization**: Docker, Docker Compose (dev mode only)
 
 ## Project Structure
@@ -103,20 +87,10 @@ JobiAI/
 │   │   │   ├── logger.py     # Logging utilities
 │   │   │   ├── delays.py     # Random delay helper
 │   │   │   └── port_finder.py # Dynamic port allocation
-│   │   ├── tray/             # System tray module (desktop mode)
-│   │   │   ├── app.py        # TrayApp class
-│   │   │   └── autostart.py  # Windows registry for auto-start
-│   │   ├── settings.py       # User settings manager (JSON)
-│   │   └── desktop.py        # Desktop app entry point
 │   ├── scripts/
 │   │   └── migrate_to_sqlite.py # PostgreSQL to SQLite migration
 │   ├── alembic/              # Database migrations
 │   └── linkedin_data/        # Persistent browser session
-├── assets/
-│   ├── icon.ico              # App icon
-│   └── create_icon.py        # Icon generation script
-├── jobiai.spec               # PyInstaller build spec
-├── build.bat                 # Build script for desktop app
 ├── frontend/
 │   ├── src/
 │   │   ├── api/client.ts     # Axios API wrapper
@@ -491,9 +465,9 @@ Key features:
 - "Waiting for Reply/Accept" badges with time since last check
 - **Dropdown filter**: Action-focused options (Run All Pending, Send All Messages, etc.) - only shows options with count > 0
 
-### Dashboard (`pages/Dashboard.tsx`)
+### Stats (`pages/Stats.tsx`)
 - Statistics cards (jobs, messages, connections, errors)
-- Recent activity feed (auto-refresh every 5 seconds)
+- Recent activity feed
 
 ### Templates (`pages/Templates.tsx`)
 - Template list with edit/delete
@@ -544,10 +518,11 @@ BROWSER_HEADLESS=false  # Always false (LinkedIn detects headless)
 FAST_MODE=true          # true=300ms delays, false=1000ms delays
 ```
 
-## Dynamic Port Allocation
+## Port Configuration
 
-Windows/Hyper-V reserves random port ranges that change on reboot. The `port_finder.py` utility handles this:
+**Hidden mode** (`JobiAI.vbs`): Fixed ports - backend 9000, frontend 5173
 
+**Dev mode** (`start-dev.bat`): Dynamic port allocation due to Windows/Hyper-V reserving random port ranges:
 - **Backend ports**: Tries 9000-9099, then 9200-9299, then 9500-9599
 - **Frontend ports**: 5173-5999
 - **Database ports**: 5432-5436, then 15432-15532, then 25432-25532
@@ -651,17 +626,8 @@ When user clicks Stop/Abort:
 
 ## Known Issues & TODO
 
-### Hidden Background Mode Issues
-- [x] **Working** - `JobiAI.vbs` successfully launches backend/frontend hidden
-- [ ] **Database not loading** - VBS launcher uses SQLite but browser_context is in dev location
-  - Hidden mode uses `backend/linkedin_data/browser_context/` (same as dev)
-  - Need to verify SQLite path is correct in hidden mode
-
-### PyInstaller Desktop Mode Issues (Experimental)
-- [ ] **Playwright browser not bundled** - PyInstaller doesn't include Chromium
-  - Error: "Executable doesn't exist at ...\_MEI...\playwright\..."
-  - Workaround: Use Hidden Background Mode instead (`JobiAI.vbs`)
-- [ ] **Browser installer added** but not fully tested (`tray/browser_installer.py`)
+### Hidden Background Mode
+- [x] **Working** - `JobiAI.vbs` successfully launches backend/frontend hidden with SQLite database
 
 ### Priority 1: Rate Limiting
 - [ ] Track daily message count in database
@@ -694,37 +660,9 @@ When user clicks Stop/Abort:
 | Contact model | `backend/app/models/contact.py` |
 | Frontend API client | `frontend/src/api/client.ts` |
 | Jobs page | `frontend/src/pages/Jobs.tsx` |
-| Browser data (dev & hidden mode) | `backend/linkedin_data/browser_context/` |
-| Browser data (PyInstaller mode) | `%LOCALAPPDATA%\JobiAI\browser_context\` |
+| Browser data | `backend/linkedin_data/browser_context/` |
 | SQLite database (hidden mode) | `%LOCALAPPDATA%\JobiAI\jobiai.db` |
 | Migrations | `backend/alembic/versions/` |
-| Desktop entry point | `backend/app/desktop.py` |
-| Tray app | `backend/app/tray/app.py` |
-| Settings manager | `backend/app/settings.py` |
-| PyInstaller spec | `jobiai.spec` |
-| Build script | `build.bat` |
-| Debug runner | `run-debug.bat` |
 | Migration script | `backend/scripts/migrate_to_sqlite.py` |
 | **Hidden mode launcher** | `JobiAI.vbs` |
-| Hidden mode stop | `stop-background.bat` |
-| Hidden mode (with tray) | `start-hidden.pyw` |
-
-## Desktop App Architecture
-
-### Key Files
-- **`desktop.py`** - Entry point with single-instance check (Windows Mutex)
-- **`tray/app.py`** - TrayApp class managing tray icon, server, and browser
-- **`settings.py`** - AppSettings dataclass with JSON persistence
-- **`tray/autostart.py`** - Windows registry for auto-start on login
-
-### Data Locations (Desktop Mode)
-- **Database**: `%LOCALAPPDATA%\JobiAI\jobiai.db` (SQLite)
-- **Settings**: `%LOCALAPPDATA%\JobiAI\settings.json`
-- **Browser context**: `%LOCALAPPDATA%\JobiAI\browser_context\` (Playwright session)
-
-### PyInstaller Bundle
-The `jobiai.spec` file configures:
-- Hidden imports for uvicorn, pystray, playwright_stealth, SQLAlchemy SQLite dialect
-- Data files: frontend dist, playwright_stealth JS files, assets (icons)
-- Single-file executable with `console=False` (no cmd window)
-- Uses `runw.exe` bootloader for Windows GUI app
+| Hidden mode stop | `exit-JobiAI.bat` (or just close browser tab) |

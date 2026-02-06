@@ -1,6 +1,7 @@
 ' JobiAI Silent Launcher
 ' Starts backend and frontend completely hidden with SQLite database
-' Double-click to run, use stop-background.bat to stop
+' Double-click to run - auto-exits when browser tab closes
+' Manual stop: run exit-JobiAI.bat
 
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -60,4 +61,5 @@ MsgBox "JobiAI started!" & vbCrLf & vbCrLf & _
        "Backend: http://localhost:9000" & vbCrLf & _
        "Frontend: http://localhost:5173" & vbCrLf & _
        "Database: " & dbUrl & vbCrLf & vbCrLf & _
-       "Run stop-background.bat to stop.", vbInformation, "JobiAI"
+       "Close the browser tab to stop JobiAI." & vbCrLf & _
+       "Or run exit-JobiAI.bat to force stop.", vbInformation, "JobiAI"

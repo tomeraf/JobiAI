@@ -175,4 +175,22 @@ export const authApi = {
     api.post('/auth/logout').then(res => res.data),
 }
 
+// System API (heartbeat, shutdown)
+export const systemApi = {
+  heartbeat: () =>
+    api.post('/heartbeat').then(res => res.data).catch(() => {}),
+
+  shutdown: () => {
+    // Use sendBeacon for reliable delivery on page close
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/shutdown', '')
+    } else {
+      // Fallback to sync XHR (blocking but reliable)
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/shutdown', false)  // false = synchronous
+      xhr.send()
+    }
+  },
+}
+
 export default api

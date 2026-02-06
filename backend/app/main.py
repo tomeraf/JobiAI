@@ -4,12 +4,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 import sys
+import os
+import signal
+import threading
+import time
 
 from app.api import jobs, templates, selectors, logs, auth, hebrew_names
 from app.utils.logger import get_logger
 from app.utils.port_finder import get_dynamic_cors_origins
 
 logger = get_logger(__name__)
+
+# Heartbeat tracking for auto-shutdown
+_last_heartbeat = time.time()
+_heartbeat_timeout = 30  # seconds - shutdown if no heartbeat for this long
+_heartbeat_enabled = False  # Only enable after first heartbeat received
 
 # Determine frontend path based on execution mode
 if getattr(sys, 'frozen', False):
@@ -59,6 +68,56 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.post("/api/heartbeat")
+async def heartbeat():
+    """Frontend sends this periodically to indicate it's still open."""
+    global _last_heartbeat, _heartbeat_enabled
+    _last_heartbeat = time.time()
+    _heartbeat_enabled = True
+    return {"status": "ok"}
+
+
+@app.post("/api/shutdown")
+async def shutdown():
+    """
+    Shutdown the server. Called when frontend tab is closed.
+    Kills both backend (self) and frontend (node) processes.
+    """
+    logger.info("Shutdown requested - closing JobiAI...")
+
+    def do_shutdown():
+        time.sleep(0.5)  # Give time for response to be sent
+
+        # Kill frontend (node/vite on port 5173)
+        if sys.platform == 'win32':
+            os.system('taskkill /F /IM node.exe >nul 2>&1')
+        else:
+            os.system('pkill -f "vite"')
+
+        # Kill self
+        os._exit(0)
+
+    threading.Thread(target=do_shutdown, daemon=True).start()
+    return {"status": "shutting_down"}
+
+
+def _heartbeat_checker():
+    """Background thread that checks for heartbeat timeout."""
+    global _last_heartbeat, _heartbeat_enabled
+    while True:
+        time.sleep(10)  # Check every 10 seconds
+        if _heartbeat_enabled:
+            elapsed = time.time() - _last_heartbeat
+            if elapsed > _heartbeat_timeout:
+                logger.info(f"No heartbeat for {elapsed:.0f}s - auto-shutdown triggered")
+                # Kill frontend first
+                if sys.platform == 'win32':
+                    os.system('taskkill /F /IM node.exe >nul 2>&1')
+                else:
+                    os.system('pkill -f "vite"')
+                os._exit(0)
+
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("JobiAI API starting up...")
@@ -66,6 +125,11 @@ async def startup_event():
     from app.database import init_db
     await init_db()
     logger.info("Database initialized")
+
+    # Start heartbeat checker thread (for auto-shutdown when browser closes)
+    heartbeat_thread = threading.Thread(target=_heartbeat_checker, daemon=True)
+    heartbeat_thread.start()
+    logger.info("Heartbeat checker started (auto-shutdown enabled)")
 
 
 @app.on_event("shutdown")
