@@ -41,6 +41,16 @@ console.log(`[Vite] Frontend will try port ${portConfig.frontend_port}`)
 
 export default defineConfig({
   plugins: [react()],
+  // Use relative paths for production build (important for desktop app)
+  base: './',
+  build: {
+    // Output to dist folder (default, but explicit)
+    outDir: 'dist',
+    // Generate source maps for debugging
+    sourcemap: false,
+    // Ensure assets are in a predictable location
+    assetsDir: 'assets',
+  },
   server: {
     host: 'localhost',
     port: portConfig.frontend_port,

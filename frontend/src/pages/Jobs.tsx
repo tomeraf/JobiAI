@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Plus,
   Trash2,
   RefreshCw,
   ExternalLink,
@@ -92,11 +91,6 @@ function JobSubmitForm({ onSuccess }: { onSuccess: () => void }) {
       setError(null)
       createMutation.mutate(trimmed)
     }
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    submitUrl(url)
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {

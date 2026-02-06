@@ -5,6 +5,7 @@ Contains browser context management, retry logic, and chat modal helpers.
 """
 
 import os
+import sys
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -12,8 +13,31 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def get_browser_data_path() -> Path:
+    """
+    Get the path for browser data (persistent context).
+
+    In desktop mode (frozen exe), uses LOCALAPPDATA/JobiAI/browser_context/
+    In development mode, uses linkedin_data/browser_context/
+    """
+    if getattr(sys, 'frozen', False):
+        # Desktop mode - store in LOCALAPPDATA
+        data_dir = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'JobiAI'
+        path = data_dir / 'browser_context'
+        logger.info(f"Desktop mode - browser data path: {path}")
+        return path
+    else:
+        # Development mode
+        path = Path("linkedin_data/browser_context")
+        logger.info(f"Development mode - browser data path: {path}")
+        return path
+
+
 # Path to store browser data (persistent context)
-BROWSER_DATA_PATH = Path("linkedin_data/browser_context")
+# Note: This is evaluated at import time, which is fine since
+# desktop.py sets up the environment before importing anything
+BROWSER_DATA_PATH = get_browser_data_path()
 
 # Speed mode - set to false for more human-like delays (safer)
 FAST_MODE = os.getenv("FAST_MODE", "true").lower() == "true"
@@ -30,17 +54,40 @@ def ensure_browser_data_dir():
     BROWSER_DATA_PATH.mkdir(parents=True, exist_ok=True)
 
 
-def get_browser_args(viewport: dict = None, maximized: bool = True) -> dict:
+def get_browser_visibility() -> bool:
+    """Get browser visibility setting from app settings."""
+    try:
+        from app.settings import get_settings
+        return get_settings().browser_visible
+    except Exception:
+        # Settings not initialized (dev mode or not desktop app)
+        return True  # Default to visible
+
+
+def get_browser_args(viewport: dict = None, maximized: bool = True, hidden: bool = None) -> dict:
     """
     Get standard browser launch arguments.
 
     Args:
         viewport: Optional viewport size dict with width/height
         maximized: If True, use maximized window (default: True)
+        hidden: If True, position window off-screen. If None, uses app settings.
 
     Returns:
         Dict of arguments for launch_persistent_context
     """
+    # Determine if browser should be hidden
+    if hidden is None:
+        hidden = not get_browser_visibility()
+
+    if hidden:
+        # Position window far off-screen (not headless - that's detected by LinkedIn)
+        return {
+            "headless": False,
+            "viewport": {"width": 1280, "height": 720},
+            "args": ["--window-position=-32000,-32000", "--window-size=1300,750"],
+        }
+
     if maximized:
         return {
             "headless": False,
@@ -473,3 +520,55 @@ def bring_browser_to_front():
         win32gui.EnumWindows(bring_chromium_to_front, None)
     except Exception as e:
         logger.debug(f"Could not bring window to front: {e}")
+
+
+def hide_browser_window():
+    """Move the browser window off-screen (Windows only)."""
+    try:
+        import win32gui
+        import win32con
+
+        def hide_chromium(hwnd, _):
+            title = win32gui.GetWindowText(hwnd)
+            if "Chromium" in title or "LinkedIn" in title:
+                # Move window far off-screen
+                win32gui.SetWindowPos(
+                    hwnd, None,
+                    -32000, -32000,  # Off-screen position
+                    0, 0,  # Keep current size
+                    win32con.SWP_NOSIZE | win32con.SWP_NOZORDER
+                )
+                return False
+            return True
+
+        win32gui.EnumWindows(hide_chromium, None)
+        logger.info("Browser window hidden (moved off-screen)")
+    except Exception as e:
+        logger.debug(f"Could not hide browser window: {e}")
+
+
+def show_browser_window():
+    """Restore the browser window to visible position (Windows only)."""
+    try:
+        import win32gui
+        import win32con
+
+        def show_chromium(hwnd, _):
+            title = win32gui.GetWindowText(hwnd)
+            if "Chromium" in title or "LinkedIn" in title:
+                # Move window to visible position and restore
+                win32gui.SetWindowPos(
+                    hwnd, None,
+                    100, 100,  # Visible position
+                    0, 0,  # Keep current size
+                    win32con.SWP_NOSIZE | win32con.SWP_NOZORDER
+                )
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                return False
+            return True
+
+        win32gui.EnumWindows(show_chromium, None)
+        logger.info("Browser window shown")
+    except Exception as e:
+        logger.debug(f"Could not show browser window: {e}")
